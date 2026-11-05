@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Riptide" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0D0E11</item>
+        <item name="android:textColor">#E8E8E8</item>
+    </style>
+</resources>
