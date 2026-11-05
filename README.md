@@ -1,6 +1,18 @@
-# Riptide Android v0.1
+# Riptide Android v0.1.1
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
+
+## v0.1.1 fix
+
+Send failed with "Broken pipe" on the first live test. Cause: the file
+size in the send header came from the content provider, which can report
+0 or a stale size for cloud-backed files, while the stream delivers the
+real bytes. The PC then reads the leftover file bytes as a header, fails
+with "bad header length", and closes the session. The fix spools the
+picked file to a local temp copy first, so size, SHA-256 and bytes all
+come from the same file, and the phone now waits for the PC's ack before
+calling a send successful, so a rejection or a lost connection is
+reported instead of a false success.
 
 ## What v0.1 does
 
@@ -41,12 +53,12 @@ and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
 
-## v0.1 release APK
+## v0.1.1 release APK
 
-- `app-release.apk`, 48 MB, versionCode 1, versionName 0.1, package `com.riptide`, min SDK 29, target SDK 34.
-- SHA-256: `8227c578a8d99c4b16b29a7036ddb42acf194756b130888666c1aecb0ad9b7da`
+- `app-release.apk`, 48 MB, versionCode 2, versionName 0.1.1, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `bf50d9b90720f312552e71279768cd9813f31c9e0fb1b113725f18bbb8548953`
 - Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6`.
-- Debug APK SHA-256: `1d9f8be6a20b6e9f8503132dcc6f123499f590484b9879b09bcb9196f72a8ff1`
+- Debug APK SHA-256: `1d9f8be6a20b6e9f8503132dcc6f123499f590484b9879b09bcb9196f72a8ff1` (v0.1 debug build, unchanged in v0.1.1)
 
 ## Signing a release
 

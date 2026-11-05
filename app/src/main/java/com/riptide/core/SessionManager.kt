@@ -30,6 +30,7 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,10 +43,27 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import android.util.Base64 as AndroidBase64
 
 enum class ConnectionState { IDLE, CONNECTING, CONNECTED, FAILED }
+
+/** Bytes counted and SHA-256 of a stream, read in one pass. Pure and unit tested. */
+internal fun hashAndCount(input: java.io.InputStream): Pair<Long, String> {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buf = ByteArray(256 * 1024)
+    var counted = 0L
+    while (true) {
+        val r = input.read(buf)
+        if (r < 0) break
+        if (r > 0) {
+            digest.update(buf, 0, r)
+            counted += r
+        }
+    }
+    return counted to digest.digest().joinToString("") { "%02x".format(it) }
+}
 
 class SessionManager(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -82,6 +100,10 @@ class SessionManager(private val context: Context) {
     private var approvalDecision: ((Boolean) -> Unit)? = null
     private var currentHost: String = ""
     private var downloadDeniedHandler: ((String) -> Unit)? = null
+    /** Completed by the reader when the PC acks the file being sent. Only one
+     * transfer runs at a time, so the next ack is always for this send. */
+    private data class AckResult(val name: String, val ok: Boolean, val reason: String)
+    @Volatile private var pendingAck: CompletableDeferred<AckResult?>? = null
 
     init {
         scope.launch { _savedPeers.value = peers.loadPeers() }
@@ -279,7 +301,15 @@ class SessionManager(private val context: Context) {
                             addHistory(name, name, false, 0, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
                             _error.value = "Download denied by PC: $name"
                         }
-                        "ack" -> { /* sender learns saved name; history already added on send */ }
+                        "ack" -> {
+                            // Completes the send that is waiting for confirmation.
+                            // On success the PC sends the actual saved name, which
+                            // may differ from the sent name when it was renamed.
+                            pendingAck?.complete(
+                                AckResult(header.optString("name"), header.optBoolean("ok"), header.optString("reason"))
+                            )
+                            pendingAck = null
+                        }
                         "download_ask" -> {
                             sendMutex.withLock {
                                 val denied = JSONObject().apply {
@@ -301,6 +331,8 @@ class SessionManager(private val context: Context) {
                     }
                 }
             } catch (e: Exception) {
+                pendingAck?.complete(null)
+                pendingAck = null
                 if (_connection.value == ConnectionState.CONNECTED) {
                     _error.value = friendlyError(e)
                     _connection.value = ConnectionState.FAILED
@@ -399,54 +431,85 @@ class SessionManager(private val context: Context) {
             val s = socket ?: run { _error.value = "Not connected"; return@launch }
             val resolver = context.contentResolver
             var name = "file"
-            var size = 0L
             resolver.query(uri, null, null, null, null)?.use { c ->
                 if (c.moveToFirst()) {
                     val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (ni >= 0) name = c.getString(ni) ?: name
-                    val si = c.getColumnIndex(OpenableColumns.SIZE)
-                    if (si >= 0) size = c.getLong(si)
                 }
             }
             name = basenameOnly(name)
-            _active.value = ActiveTransfer(name, TransferDirection.SEND, size, 0, "", 0f, null)
+            // Spool the picked file to a local temp copy first. The size
+            // reported by a content provider (OpenableColumns.SIZE) is
+            // not trustworthy: for cloud-backed files it can be 0 or
+            // stale, while the stream delivers the real bytes. Sending
+            // a header whose size does not match the bytes that follow
+            // makes the PC read the leftover file bytes as a header,
+            // fail with "bad header length", close the session, and the
+            // phone then fails with Broken pipe. Size, hash and bytes
+            // all come from the same local spool, so they cannot disagree.
+            val spool = File(context.cacheDir, "send-${UUID.randomUUID()}.tmp")
             try {
-                val digest = MessageDigest.getInstance("SHA-256")
-                resolver.openInputStream(uri)?.use { inp ->
-                    val buf = ByteArray(256 * 1024)
-                    var r: Int
-                    while (inp.read(buf).also { r = it } >= 0) digest.update(buf, 0, r)
-                }
-                val sha = digest.digest().joinToString("") { "%02x".format(it) }
+                val opened = resolver.openInputStream(uri)
+                    ?: run { _error.value = "send failed: could not open $name"; return@launch }
+                opened.use { inp -> FileOutputStream(spool).use { out -> inp.copyTo(out) } }
+                val (counted, sha) = FileInputStream(spool).use { hashAndCount(it) }
+                val size = counted
+                _active.value = ActiveTransfer(name, TransferDirection.SEND, size, 0, "", 0f, null)
                 val header = JSONObject().apply { put("type", "file"); put("name", name); put("size", size); put("sha256", sha) }
                 val start = System.currentTimeMillis()
                 var sent = 0L
                 var lastReport = 0L
-                sendMutex.withLock {
-                    writeHeader(s.outputStream, header.toString().toByteArray())
-                    resolver.openInputStream(uri)?.use { inp ->
-                        val buf = ByteArray(128 * 1024)
-                        var r: Int
-                        while (inp.read(buf).also { r = it } >= 0) {
-                            s.outputStream.write(buf, 0, r)
-                            sent += r
-                            val now = System.currentTimeMillis()
-                            if (now - lastReport >= 100 || sent >= size) {
-                                lastReport = now
-                                val elapsed = ((now - start) / 1000.0).coerceAtLeast(0.1)
-                                val speed = sent / elapsed
-                                _active.value = ActiveTransfer(name, TransferDirection.SEND, size, sent, formatSpeed(speed), if (size > 0) sent.toFloat() / size else 0f, formatEta(speed, size - sent))
+                val ackDeferred = CompletableDeferred<AckResult?>()
+                pendingAck?.complete(null)
+                pendingAck = ackDeferred
+                try {
+                    sendMutex.withLock {
+                        writeHeader(s.outputStream, header.toString().toByteArray())
+                        FileInputStream(spool).use { inp ->
+                            val buf = ByteArray(128 * 1024)
+                            while (true) {
+                                val r = inp.read(buf)
+                                if (r < 0) break
+                                if (r == 0) continue
+                                s.outputStream.write(buf, 0, r)
+                                sent += r
+                                val now = System.currentTimeMillis()
+                                if (now - lastReport >= 100 || sent >= size) {
+                                    lastReport = now
+                                    val elapsed = ((now - start) / 1000.0).coerceAtLeast(0.1)
+                                    val speed = sent / elapsed
+                                    _active.value = ActiveTransfer(name, TransferDirection.SEND, size, sent, formatSpeed(speed), if (size > 0) sent.toFloat() / size else 0f, formatEta(speed, size - sent))
+                                }
                             }
+                            s.outputStream.flush()
                         }
-                        s.outputStream.flush()
                     }
+                    // Do not call it sent until the PC confirms it: the PC
+                    // acks only after reading every byte, verifying the
+                    // SHA-256 and renaming the .part file. On success the
+                    // ack carries the actual saved name.
+                    val ack = withTimeout(60_000) { ackDeferred.await() }
+                    _active.value = null
+                    if (ack == null) {
+                        addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
+                        _error.value = "send failed: connection lost before PC confirmed $name ($sent of $size bytes sent)"
+                    } else if (!ack.ok) {
+                        addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
+                        _error.value = "send failed: PC rejected $name: ${ack.reason.ifBlank { "unknown reason" }}"
+                    } else {
+                        addHistory(name, ack.name, ack.name != name, size, TransferDirection.SEND, TransferStatus.SUCCESS, true)
+                    }
+                } catch (e: Exception) {
+                    pendingAck = null
+                    _active.value = null
+                    addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
+                    _error.value = "send failed: ${e.message} ($sent of $size bytes sent)"
                 }
-                _active.value = null
-                addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.SUCCESS, true)
             } catch (e: Exception) {
                 _active.value = null
-                addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
                 _error.value = "send failed: ${e.message}"
+            } finally {
+                spool.delete()
             }
         }
     }
