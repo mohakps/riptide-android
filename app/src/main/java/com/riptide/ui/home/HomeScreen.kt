@@ -121,7 +121,7 @@ fun HomeScreen(
                     value = uiState.hostInput,
                     onValueChange = viewModel::onHostInputChanged,
                     enabled = !uiState.isConnecting,
-                    placeholder = { Text("metalvoid.ddns.net", color = RiptideColors.OnSurfaceVariant) },
+                    placeholder = { Text("203.0.113.10", color = RiptideColors.OnSurfaceVariant) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Uri,
@@ -176,9 +176,13 @@ fun HomeScreen(
                     }
                 }
                 uiState.connectionError?.let { err ->
+                    // The heading must match the failure: a session the PC
+                    // ended is not a PC that could not be reached, and a
+                    // transfer error never reaches this screen at all now.
+                    val sessionEnded = err == "The PC ended the session."
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Couldn't reach this PC",
+                        text = if (sessionEnded) "Session ended" else "Couldn't reach this PC",
                         color = RiptideColors.Error,
                         fontSize = 17.sp,
                         lineHeight = 24.sp,
@@ -188,7 +192,8 @@ fun HomeScreen(
                     Text(
                         // The design's recovery line, unless the cause already
                         // carries its own (e.g. the timeout hint).
-                        text = if ("Create Server" in err) err
+                        text = if (sessionEnded) "$err Reconnect to start a new session."
+                        else if ("Create Server" in err) err
                         else "$err Check the address and start Create Server on the PC. Then try Join PC again.",
                         color = RiptideColors.OnSurfaceVariant,
                         fontSize = 14.sp,

@@ -108,6 +108,12 @@ class SessionManager(private val context: Context) {
     val receivedHistory: StateFlow<List<ReceivedFileRecord>> = _receivedHistory.asStateFlow()
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+    /** Transfer failures (send / receive / download). Kept separate from
+     * [_error] on purpose: a failed transfer must never be shown on Home
+     * as "Couldn't reach this PC". Home shows session errors only; the
+     * Session screen shows transfer errors. */
+    private val _transferError = MutableStateFlow<String?>(null)
+    val transferError: StateFlow<String?> = _transferError.asStateFlow()
     private val _savedPeers = MutableStateFlow<List<SavedPeerRecord>>(emptyList())
     /** Sorted by last successful connection, most recent first. */
     val savedPeers: StateFlow<List<SavedPeerRecord>> = _savedPeers.asStateFlow()
@@ -156,7 +162,7 @@ class SessionManager(private val context: Context) {
         }
     }
 
-    fun clearError() { _error.value = null }
+    fun clearError() { _error.value = null; _transferError.value = null }
 
     fun clearDownloadDenied() {
         if (_downloadState.value is DownloadState.Denied) _downloadState.value = DownloadState.Idle
@@ -189,6 +195,7 @@ class SessionManager(private val context: Context) {
         _approval.value = null
         _approvalPhase.value = ApprovalPhase.NONE
         _error.value = null
+        _transferError.value = null
         closeSocket()
         _connection.value = ConnectionState.IDLE
     }
@@ -198,6 +205,7 @@ class SessionManager(private val context: Context) {
         val generation = attemptGeneration
         connectJob = scope.launch {
             _error.value = null
+            _transferError.value = null
             _connection.value = ConnectionState.CONNECTING
             try {
                 val host = parseHostInput(hostInput)
@@ -251,6 +259,8 @@ class SessionManager(private val context: Context) {
             closeSocket()
             _approval.value = null
             _approvalPhase.value = ApprovalPhase.NONE
+            _error.value = null
+            _transferError.value = null
             _busyPhase.value = null
             _downloadState.value = DownloadState.Idle
             _connection.value = ConnectionState.IDLE
@@ -372,7 +382,22 @@ class SessionManager(private val context: Context) {
                         }
                     }
                     _pingMs.value = System.currentTimeMillis() - start
-                } catch (_: Exception) { break }
+                } catch (e: Exception) {
+                    // A cancelled heartbeat (deliberate disconnect) is not
+                    // a failure. Any other write failure means the socket
+                    // is dead, and this is what used to surface later as
+                    // "send failed: Broken pipe (0 bytes sent)": the
+                    // reader blocks forever on a silently dead socket, so
+                    // nothing marked the session dead until the next send
+                    // tried to write to it. Detect it here, within 10 s.
+                    if (e is kotlinx.coroutines.CancellationException) break
+                    if (_connection.value == ConnectionState.CONNECTED) {
+                        _error.value = "Connection lost."
+                        _connection.value = ConnectionState.FAILED
+                        closeSocket()
+                    }
+                    break
+                }
             }
         }
     }
@@ -420,16 +445,44 @@ class SessionManager(private val context: Context) {
                             }
                         }
                         "pong" -> {}
-                        "bye" -> break
-                        "error" -> { _error.value = header.optString("message"); break }
+                        "bye" -> {
+                            // The PC ended the session cleanly. This is a
+                            // session error, not a join failure: close the
+                            // socket and drop to FAILED so the UI shows the
+                            // interrupted state instead of staying on a dead
+                            // Session. Never leave a dead socket behind for
+                            // a later send to trip over with Broken pipe.
+                            closeSocket()
+                            _error.value = "The PC ended the session."
+                            _connection.value = ConnectionState.FAILED
+                            break
+                        }
+                        "error" -> {
+                            // Usually "no such file" answering a download
+                            // request: a transfer error, not a dead session.
+                            // Keep reading; if the PC really closed, the
+                            // next read fails and the session path below
+                            // handles it. Never break the reader here: that
+                            // used to strand the UI on a dead session.
+                            _transferError.value = header.optString("message")
+                        }
                     }
                 }
             } catch (e: Exception) {
+                // A deliberate cancel/disconnect is not a failure: the
+                // reader is cancelled from disconnect(), and reporting
+                // "session closed" for it used to leave a stale error on
+                // Home after a clean disconnect.
+                if (e is kotlinx.coroutines.CancellationException) return@launch
                 pendingAck?.complete(null)
                 pendingAck = null
                 if (_connection.value == ConnectionState.CONNECTED) {
                     _error.value = friendlyError(e)
                     _connection.value = ConnectionState.FAILED
+                    // Drop the dead socket now. A later send must see
+                    // "not connected" instead of writing to a closed
+                    // socket and reporting a misleading Broken pipe.
+                    closeSocket()
                 }
             }
         }
@@ -475,7 +528,7 @@ class SessionManager(private val context: Context) {
             _active.value = null
             _busyPhase.value = null
             addHistory(name, name, false, received, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
-            _error.value = "receive failed: ${e.message}"
+            _transferError.value = "receive failed: ${e.message}"
             return
         }
         // 100% of bytes is not success yet: verify the hash, then save.
@@ -495,7 +548,7 @@ class SessionManager(private val context: Context) {
             _active.value = null
             _busyPhase.value = null
             addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
-            _error.value = "Could not save $name to Downloads/Riptide"
+            _transferError.value = "Could not save $name to Downloads/Riptide"
             sendAck(session, name, false, "save failed")
             return
         }
@@ -549,11 +602,20 @@ class SessionManager(private val context: Context) {
 
     fun sendFile(uri: Uri) {
         if (_active.value != null || _busyPhase.value != null) {
-            _error.value = "A transfer is already in progress"
+            _transferError.value = "A transfer is already in progress"
             return
         }
+        // Never write to a socket that is not a live session. The reader
+        // closes the socket when the session dies, so a stale non-null
+        // socket used to produce "send failed: Broken pipe (0 bytes sent)"
+        // on Home after the session was already gone.
+        if (_connection.value != ConnectionState.CONNECTED || socket == null) {
+            _transferError.value = "Not connected. Join the PC and try again."
+            return
+        }
+        _transferError.value = null
         scope.launch {
-            val s = socket ?: run { _error.value = "Not connected"; return@launch }
+            val s = socket ?: run { _transferError.value = "Not connected. Join the PC and try again."; return@launch }
             val resolver = context.contentResolver
             var name = "file"
             resolver.query(uri, null, null, null, null)?.use { c ->
@@ -576,7 +638,7 @@ class SessionManager(private val context: Context) {
             val spool = File(context.cacheDir, "send-${UUID.randomUUID()}.tmp")
             try {
                 val opened = resolver.openInputStream(uri)
-                    ?: run { _error.value = "send failed: could not open $name"; return@launch }
+                    ?: run { _transferError.value = "send failed: could not open $name"; return@launch }
                 opened.use { inp -> FileOutputStream(spool).use { out -> inp.copyTo(out) } }
                 val (counted, sha) = FileInputStream(spool).use { hashAndCount(it) }
                 val size = counted
@@ -621,10 +683,10 @@ class SessionManager(private val context: Context) {
                     _busyPhase.value = null
                     if (ack == null) {
                         addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
-                        _error.value = "send failed: connection lost before PC confirmed $name ($sent of $size bytes sent)"
+                        _transferError.value = "send failed: connection lost before PC confirmed $name ($sent of $size bytes sent)"
                     } else if (!ack.ok) {
                         addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
-                        _error.value = "send failed: PC rejected $name: ${ack.reason.ifBlank { "unknown reason" }}"
+                        _transferError.value = "send failed: PC rejected $name: ${ack.reason.ifBlank { "unknown reason" }}"
                     } else {
                         addHistory(name, ack.name, ack.name != name, size, TransferDirection.SEND, TransferStatus.SUCCESS, true)
                     }
@@ -633,12 +695,12 @@ class SessionManager(private val context: Context) {
                     _active.value = null
                     _busyPhase.value = null
                     addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
-                    _error.value = "send failed: ${e.message} ($sent of $size bytes sent)"
+                    _transferError.value = "send failed: ${e.message} ($sent of $size bytes sent)"
                 }
             } catch (e: Exception) {
                 _active.value = null
                 _busyPhase.value = null
-                _error.value = "send failed: ${e.message}"
+                _transferError.value = "send failed: ${e.message}"
             } finally {
                 spool.delete()
             }
@@ -647,8 +709,13 @@ class SessionManager(private val context: Context) {
 
     fun requestDownload(name: String) {
         if (_downloadState.value is DownloadState.Waiting) return
+        if (_connection.value != ConnectionState.CONNECTED || socket == null) {
+            _transferError.value = "Not connected. Join the PC and try again."
+            return
+        }
+        _transferError.value = null
         scope.launch {
-            val s = socket ?: run { _error.value = "Not connected"; return@launch }
+            val s = socket ?: run { _transferError.value = "Not connected. Join the PC and try again."; return@launch }
             val trimmed = name.trim()
             try {
                 sendMutex.withLock {
@@ -659,7 +726,7 @@ class SessionManager(private val context: Context) {
                 _downloadState.value = DownloadState.Waiting(trimmed)
             } catch (e: Exception) {
                 _downloadState.value = DownloadState.Idle
-                _error.value = "download request failed: ${e.message}"
+                _transferError.value = "download request failed: ${e.message}"
             }
         }
     }

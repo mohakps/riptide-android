@@ -87,6 +87,10 @@ class MainActivity : ComponentActivity() {
                 val connection by session.connection.collectAsState()
                 val approval by session.approval.collectAsState()
                 val approvalPhase by session.approvalPhase.collectAsState()
+                // The interrupted card (state 13) lives in the Session
+                // screen: keep showing it after a drop, instead of
+                // flipping straight to Home and losing it.
+                val sessionUiState by sessionVm.uiState.collectAsState()
 
                 fun openSettings() {
                     settingsOpen = true
@@ -170,7 +174,8 @@ class MainActivity : ComponentActivity() {
                             onGoToTransfer = { currentTab = RiptideTab.Transfer },
                             modifier = contentModifier
                         )
-                        connection == ConnectionState.CONNECTED -> SessionScreen(
+                        connection == ConnectionState.CONNECTED ||
+                            (connection == ConnectionState.FAILED && sessionUiState.showInterrupted) -> SessionScreen(
                             viewModel = sessionVm,
                             onPickFileToSend = { pickFile.launch(arrayOf("*/*")) },
                             onDisconnect = { /* already on Transfer; IDLE shows Home */ },

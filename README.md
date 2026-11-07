@@ -2,6 +2,42 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.2.1: Broken pipe diagnosis and fix
+
+Live test of v0.2 on the phone: send failed again with "send failed:
+Broken pipe (0 of 382450369 bytes sent)", shown on Home as
+"Couldn't reach this PC". The PC side was exonerated by reproduction:
+a simulated phone (same TLS handshake, signed hello challenge, same
+framing, same 128 KB chunk send) transfers 5 MB and 365 MB to real PC
+v1.3.1 code with matching SHA-256 and ack, including a threaded run
+with reader + heartbeat and a 2 MB/s throttle. The bug was in the
+phone's session handling, not the protocol:
+
+- The heartbeat's ping write used to fail silently when the socket
+  died. The reader blocks forever on a silently dead socket, so
+  nothing marked the session dead until the next send tried to write
+  to it and got Broken pipe at 0 bytes. The heartbeat now marks the
+  session FAILED with "Connection lost." within 10 s of the socket
+  dying, and closes the dead socket.
+- Send and download now refuse when the session is not CONNECTED
+  instead of writing to a dead socket.
+- The reader no longer strands the UI on a dead session: a PC "bye"
+  closes the socket and drops to FAILED (the interrupted card, which
+  is now reachable from Home), and a PC "error" no longer kills the
+  reader loop.
+- Transfer errors live on their own flow now: a failed send shows on
+  the Session screen, never on Home as "Couldn't reach this PC".
+- A clean disconnect no longer leaves a stale error on Home.
+- The address placeholder no longer shows the user's real DDNS
+  hostname; it is now 203.0.113.10 (documentation range).
+
+What is still NOT proven: the exact event that killed the socket in
+the user's test (most likely the network dropping during the long
+spool of a cloud video, or the PC sleeping). The fixes above make the
+app detect a dead session within 10 s and report it truthfully
+instead of failing the next send with Broken pipe, but the underlying
+drop itself is environmental and can still happen.
+
 ## v0.2: final approved UI
 
 Exact implementation of the approved Stacked Blocks design. Home is three
@@ -82,6 +118,12 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.2.1 release APK
+
+- `app-release.apk`, 47 MB, versionCode 4, versionName 0.2.1, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `4b73eee3b5165c5df38e09fa52d893bc71b826b22c52c34e846fb60704e1dc96`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2, installs as an update).
 
 ## v0.2 release APK
 

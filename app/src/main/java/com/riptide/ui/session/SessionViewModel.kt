@@ -37,13 +37,21 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
             viewModelScope.launch { s.peerHost.collect { h -> _uiState.update { it.copy(peerHost = h) } } }
             viewModelScope.launch { s.pingMs.collect { p -> _uiState.update { it.copy(pingMs = p) } } }
             viewModelScope.launch { s.error.collect { e -> _uiState.update { it.copy(sessionError = e) } } }
+            // Transfer errors live on their own flow: a failed send must
+            // never surface on Home as a join failure. They are collected
+            // into sessionError too, so the Session screen shows them.
+            viewModelScope.launch { s.transferError.collect { e -> _uiState.update { it.copy(sessionError = e) } } }
             viewModelScope.launch {
                 s.connection.collect { c ->
                     val connected = c == ConnectionState.CONNECTED
                     val interrupted = !connected && wasConnected && c == ConnectionState.FAILED
                     if (connected) wasConnected = true
+                    // A fresh Join attempt clears a stale interrupted card,
+                    // so Home's connecting state shows instead.
+                    val showInterrupted = if (c == ConnectionState.CONNECTING) false
+                        else _uiState.value.showInterrupted || interrupted
                     _uiState.update {
-                        recompute(it.copy(isConnected = connected, showInterrupted = it.showInterrupted || interrupted))
+                        recompute(it.copy(isConnected = connected, showInterrupted = showInterrupted))
                     }
                 }
             }
