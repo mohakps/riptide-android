@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -24,6 +25,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.riptide.ui.components.BottomInfoPanel
 import com.riptide.ui.components.PeerRow
 import com.riptide.ui.components.RiptideTopBar
 import com.riptide.ui.model.SavedPeer
@@ -46,6 +48,17 @@ fun DevicesScreen(
     val peers by viewModel.savedPeers.collectAsState()
     Scaffold(
         topBar = { RiptideTopBar(onOpenSettings = onNavigateToSettings) },
+        bottomBar = {
+            Surface(color = RiptideColors.Background) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    BottomInfoPanel(
+                        message = "Saved identity does not mean the PC is online.",
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+        },
         containerColor = RiptideColors.Background,
         modifier = modifier
     ) { padding ->
@@ -108,13 +121,6 @@ fun DevicesScreen(
                             PeerRow(peer = peer, onConnect = onJoinPeer, onForget = viewModel::onForgetPeer)
                         }
                     }
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Text(
-                        text = "Saved identity does not mean the PC is online.",
-                        color = RiptideColors.OnSurfaceVariant,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp
-                    )
                 }
                 Spacer(modifier = Modifier.height(24.dp))
             }

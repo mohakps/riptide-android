@@ -53,6 +53,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -370,17 +371,28 @@ class SessionManager(private val context: Context) {
         repeat(attempts) { attempt ->
             val before = _lastPongAt.value
             DiagLog.log("verify", "attempt ${attempt + 1}/$attempts before=$before lastPongAt=${_lastPongAt.value}")
-            try {
-                sendMutex.withLock {
-                    val s = socket ?: return false
-                    writeHeader(s.outputStream, JSONObject().put("type", "ping").toString().toByteArray())
+            // The ping write is network I/O and must run off the main
+            // thread. onReturnedToForeground (and the pre-send checks)
+            // run on Main, and Android throws NetworkOnMainThreadException
+            // for a socket write there. That used to fail a healthy
+            // session instantly on reopen, because the catch-all below
+            // treated it as "Connection lost".
+            val wrote = try {
+                withContext(Dispatchers.IO) {
+                    sendMutex.withLock {
+                        val s = socket ?: return@withContext false
+                        writeHeader(s.outputStream, JSONObject().put("type", "ping").toString().toByteArray())
+                        true
+                    }
                 }
-                DiagLog.log("verify", "ping sent (attempt ${attempt + 1})")
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 DiagLog.log("verify", "ping write FAILED: ${e::class.simpleName}: ${e.message}")
                 failSession("Connection lost.")
                 return false
             }
+            if (!wrote) return false
+            DiagLog.log("verify", "ping sent (attempt ${attempt + 1})")
             val ok = withTimeoutOrNull(timeoutMs) {
                 _lastPongAt.first { it > before }
                 true

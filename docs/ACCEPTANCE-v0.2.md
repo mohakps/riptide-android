@@ -426,3 +426,70 @@ Fixes in v0.2.1 (versionCode 4):
   update).
 - Live phone test is the user's step: install, join the PC, minimise,
   reopen, then Settings, Share diagnostics log, and send the file.
+
+## v0.4 addendum (MainThread fix + Session polish, 2026-11-08)
+
+- Root cause, from the v0.3.4 diagnostics log the user sent:
+  verifyAlive ran on the main thread and its ping write threw
+  NetworkOnMainThreadException instantly on reopen. The catch-all
+  treated it as "Connection lost" and failSession closed a healthy
+  socket. The socket was healthy while minimised (heartbeat ping and
+  reader pong at 02:42:31) and the session was CONNECTED at reopen.
+  The reader and heartbeat "Socket closed" lines were consequences,
+  not causes. The v0.3.3 retry never ran because the write threw on
+  attempt 1. This disproves the earlier "socket dies silently while
+  minimised" theory.
+- Fix: the ping write in verifyAlive now runs on Dispatchers.IO
+  (withContext), so the check can no longer fail a live session this
+  way. This also covers the pre-send and pre-download checks, which
+  can run on the main thread too. A cancelled check rethrows
+  CancellationException instead of failing the session.
+- Session header: one compact row. Peer name (28/36 medium), host
+  (14/20 muted monospace), 8 dp below it a 6 dp green dot with
+  Connected 13/18 #78DC8C (Disconnected in red when interrupted).
+  Tonal Disconnect button, #282828, #FF6B6B power glyph (20 dp) and
+  14 sp label, 8 dp between, min 48 dp, capsule 24 dp, content
+  description "Disconnect from [peer name]". The old CONNECTED pill
+  and floating Disconnect text are gone. On narrow screens (<360 dp)
+  or font scale >= 1.3 the whole button drops below the peer details,
+  aligned end. Disconnect keeps its confirmation dialog, with the
+  transfer warning while a transfer is in progress.
+- Transfer card: fixed two-column metrics Row (16 dp gap) below the
+  progress bar, Transferred left, Speed right, each with a 12/16
+  muted label and a 14/20 monospace value. Shared unit shown once
+  (423.8 / 504.9 MB) via new util formatBytesPair, both units when
+  they differ. Speed shows an em dash when not being measured
+  (verifying, waiting for ack, blank or 0 B/s) instead of a made-up
+  0 MB/s. Cancel is in its own footer Row, end aligned, 16 dp below
+  the metrics, same tonal appearance and behaviour. The verifying
+  and waiting-for-ack status lines are kept between the metrics and
+  Cancel. Full-value accessible descriptions are kept on both
+  metric values.
+- Bottom info panel: new reusable ui/components/BottomInfoPanel
+  (info icon + message, no heading, #1C1C1C, 20 dp radius, 16 dp
+  padding, min 64 dp, 20 dp icon, 12 dp gap, #B8B6B1 icon/text,
+  14/20 sp). Session shows "Interrupted transfers restart from the
+  beginning." in its bottomBar above the Send/Download strip, with
+  12 dp to the strip. Devices shows "Saved identity does not mean
+  the PC is online." in its bottomBar directly above navigation,
+  with 12 dp to it. Both old inline copies are removed. New icons
+  drawable/riptide_info.xml and drawable/riptide_power.xml
+  (stroke style, matching the other riptide_* icons); both were
+  rendered and checked visually before use.
+- Launcher icon: the supplied foreground and monochrome files
+  replace the old ones byte-identical (verified with cmp). Only the
+  outer group scale changed, 1.10 to 0.95 around pivot (54,54), so
+  the mark is 86.4% of its previous size. Background, gradient,
+  adaptive definitions and manifest icon references are untouched.
+- Build evidence: full verify on this machine (assembleDebug,
+  testDebugUnitTest, lintDebug, assembleRelease) — BUILD SUCCESSFUL.
+  35 tests, 0 failures (one new formatBytesPair test in
+  FormatUtilsTest). Lint 0 errors, 22 warnings only (same set as
+  before). Release APK 47 MB, versionCode 11, versionName 0.4,
+  SHA-256 0ef03f3e35dd2b0f646c7d6bdee4654b954c7bc07af40684dedcdf324a1b2ba9,
+  apksigner v2 verified, same signing cert c7b64485 (installs as an
+  update).
+- Live phone checks are the user's step (no emulator on this
+  machine): the reopen-while-minimised test, Session and Devices
+  screenshots at 360 and 412 dp, font scale 1.3/2.0, and normal and
+  themed launcher icons, accounting for launcher icon caching.

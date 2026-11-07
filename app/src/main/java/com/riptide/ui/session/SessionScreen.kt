@@ -1,8 +1,11 @@
 package com.riptide.ui.session
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -27,7 +31,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -38,13 +41,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.R
-import com.riptide.ui.components.RiptideBadge
+import com.riptide.ui.components.BottomInfoPanel
 import com.riptide.ui.model.DownloadState
 import com.riptide.ui.theme.MonospaceFontFamily
 import com.riptide.ui.theme.RiptideColors
@@ -113,32 +119,39 @@ fun SessionScreen(
         },
         bottomBar = {
             Surface(color = RiptideColors.Background) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (!uiState.canStartTransfer) {
-                        Text(
-                            text = "One transfer in progress",
-                            color = RiptideColors.OnSurfaceVariant,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                        )
-                    } else {
-                        Button(
-                            onClick = onPickFileToSend,
-                            modifier = Modifier.weight(1f).heightIn(min = 56.dp),
-                            shape = RoundedCornerShape(28.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
-                        ) { Text("Send file", fontSize = 16.sp, fontWeight = FontWeight.Medium) }
-                        Button(
-                            onClick = { downloadPrefill = ""; showDownloadDialog = true },
-                            modifier = Modifier.weight(1f).heightIn(min = 56.dp),
-                            shape = RoundedCornerShape(28.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface)
-                        ) { Text("Download", fontSize = 16.sp, fontWeight = FontWeight.Medium) }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    BottomInfoPanel(
+                        message = "Interrupted transfers restart from the beginning.",
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (!uiState.canStartTransfer) {
+                            Text(
+                                text = "One transfer in progress",
+                                color = RiptideColors.OnSurfaceVariant,
+                                fontSize = 14.sp,
+                                lineHeight = 20.sp,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                            )
+                        } else {
+                            Button(
+                                onClick = onPickFileToSend,
+                                modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+                                shape = RoundedCornerShape(28.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
+                            ) { Text("Send file", fontSize = 16.sp, fontWeight = FontWeight.Medium) }
+                            Button(
+                                onClick = { downloadPrefill = ""; showDownloadDialog = true },
+                                modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+                                shape = RoundedCornerShape(28.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface)
+                            ) { Text("Download", fontSize = 16.sp, fontWeight = FontWeight.Medium) }
+                        }
                     }
                 }
             }
@@ -148,34 +161,39 @@ fun SessionScreen(
     ) { padding ->
         BoxWithConstraints(modifier = Modifier.padding(padding).fillMaxSize()) {
             val gutter = if (maxWidth < 360.dp) 16.dp else 24.dp
+            val narrow = maxWidth < 360.dp
             Column(
                 modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = gutter)
             ) {
                 Spacer(modifier = Modifier.height(8.dp))
-                if (uiState.showInterrupted) {
-                    RiptideBadge(text = "DISCONNECTED", containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.Error)
+                // Compact peer header: name/host/status on the left,
+                // Disconnect on the right. On narrow screens or large
+                // text the whole button drops below the peer details,
+                // aligned end, so peer data is never overlapped or cut.
+                val peerName = uiState.peerName.ifBlank { uiState.peerHost.ifBlank { "Connected PC" } }
+                val fontScale = LocalDensity.current.fontScale
+                val stackHeader = narrow || fontScale >= 1.3f
+                if (stackHeader) {
+                    PeerHeaderDetails(
+                        peerName = peerName,
+                        peerHost = uiState.peerHost,
+                        connected = !uiState.showInterrupted
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        DisconnectButton(peerName = peerName, onClick = { showDisconnectConfirm = true })
+                    }
                 } else {
-                    RiptideBadge(text = "CONNECTED", containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.Success)
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = uiState.peerName.ifBlank { uiState.peerHost.ifBlank { "Connected PC" } },
-                    color = RiptideColors.OnSurface,
-                    fontSize = 32.sp,
-                    lineHeight = 40.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = uiState.peerHost,
-                    color = RiptideColors.OnSurfaceVariant,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp
-                )
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = { showDisconnectConfirm = true }, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Disconnect", color = RiptideColors.Error, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Row(verticalAlignment = Alignment.Top) {
+                        PeerHeaderDetails(
+                            peerName = peerName,
+                            peerHost = uiState.peerHost,
+                            connected = !uiState.showInterrupted,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(16.dp))
+                        DisconnectButton(peerName = peerName, onClick = { showDisconnectConfirm = true })
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
 
@@ -300,13 +318,6 @@ fun SessionScreen(
                 }
                 Spacer(Modifier.height(20.dp))
                 SessionHistoryFeed(records = uiState.transferHistory)
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "Interrupted transfers restart from the beginning.",
-                    color = RiptideColors.OnSurfaceVariant,
-                    fontSize = 13.sp,
-                    lineHeight = 20.sp
-                )
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -376,5 +387,61 @@ fun SessionScreen(
                 shape = RoundedCornerShape(28.dp)
             )
         }
+    }
+}
+
+/** Peer name, host and live status for the compact Session header. */
+@Composable
+private fun PeerHeaderDetails(peerName: String, peerHost: String, connected: Boolean, modifier: Modifier = Modifier) {
+    val statusColor = if (connected) RiptideColors.Success else RiptideColors.Error
+    Column(modifier = modifier) {
+        Text(
+            text = peerName,
+            color = RiptideColors.OnSurface,
+            fontSize = 28.sp,
+            lineHeight = 36.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = peerHost,
+            color = RiptideColors.OnSurfaceVariant,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 14.sp,
+            lineHeight = 20.sp
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(6.dp).background(statusColor, CircleShape))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (connected) "Connected" else "Disconnected",
+                color = statusColor,
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+        }
+    }
+}
+
+/** Contained tonal Disconnect button for the compact Session header. */
+@Composable
+private fun DisconnectButton(peerName: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.heightIn(min = 48.dp).semantics {
+            contentDescription = "Disconnect from $peerName"
+        },
+        shape = RoundedCornerShape(24.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.Error),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.riptide_power),
+            contentDescription = null,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text("Disconnect", fontSize = 14.sp, fontWeight = FontWeight.Medium)
     }
 }

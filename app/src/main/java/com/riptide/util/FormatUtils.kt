@@ -15,6 +15,31 @@ fun formatBytes(bytes: Long): String {
     }
 }
 
+/** Unit a byte count is shown in, for pairing two values. */
+private data class BytesUnit(val divisor: Double, val suffix: String)
+
+private fun unitFor(bytes: Long): BytesUnit {
+    val b = bytes.coerceAtLeast(0L)
+    return when {
+        b >= 1024L * 1024L -> BytesUnit(1024.0 * 1024.0, "MB")
+        b >= 1024L -> BytesUnit(1024.0, "KB")
+        else -> BytesUnit(1.0, "B")
+    }
+}
+
+/** Transferred / total with the unit shown once when both share it:
+ * "423.8 / 504.9 MB". When they differ, each keeps its own unit:
+ * "512 KB / 2 MB". */
+fun formatBytesPair(transferred: Long, total: Long): String {
+    val t = unitFor(total)
+    val f = unitFor(transferred)
+    return if (t == f) {
+        "${trimDecimal(transferred.toDouble() / t.divisor)} / ${trimDecimal(total.toDouble() / t.divisor)} ${t.suffix}"
+    } else {
+        "${formatBytes(transferred)} / ${formatBytes(total)}"
+    }
+}
+
 private fun trimDecimal(value: Double): String {
     val one = String.format(Locale.US, "%.1f", value)
     return if (one.endsWith(".0")) one.dropLast(2) else one

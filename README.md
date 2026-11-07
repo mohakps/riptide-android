@@ -2,6 +2,39 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.4: MainThread fix, Session polish, bottom info panels, icon padding
+
+- Root cause of the background disconnect, found from the v0.3.4
+  diagnostics log: verifyAlive ran on the main thread, and its ping
+  write threw NetworkOnMainThreadException instantly on reopen. The
+  catch-all treated that as "Connection lost" and closed a healthy
+  socket. The ping write now runs on Dispatchers.IO, so the check
+  can no longer fail a live session this way. This also covers the
+  pre-send and pre-download checks, which can run on the main thread
+  too. A cancelled check no longer fails the session either.
+- Session header is now one compact row: peer name, host and a green
+  dot with Connected (or Disconnected, in red) on the left, and a
+  contained tonal Disconnect button with a power glyph on the right.
+  The old CONNECTED pill and the floating Disconnect text are gone.
+  On narrow screens or large text the whole button drops below the
+  peer details, aligned end. Disconnect keeps its confirmation, with
+  the transfer warning while a transfer is in progress.
+- The transfer card no longer wraps size and speed into one line.
+  Below the progress bar there are two fixed columns, Transferred
+  on the left and Speed on the right, with the shared unit shown once
+  (423.8 / 504.9 MB). Speed shows an em dash when it is not being
+  measured instead of a made-up 0 MB/s. Cancel is in its own footer
+  row, end aligned, below the metrics.
+- A reusable BottomInfoPanel (info icon plus message, no heading)
+  now sits in the bottom bar. Session shows "Interrupted transfers
+  restart from the beginning." above the Send/Download strip, and
+  Devices shows "Saved identity does not mean the PC is online."
+  directly above navigation. The old inline copies are removed.
+- The Block trident icon gets more padding: the foreground and
+  monochrome groups go from scale 1.10 to 0.95 around the same
+  pivot, so the mark is 86.4% of its previous size. Nothing else
+  in the icon changed.
+
 ## v0.3.4: diagnostic test build for the background disconnect
 
 - Test build only, to find why the session dies when the app is
@@ -230,6 +263,15 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.4 release APK
+
+- `app-release.apk`, 47 MB, versionCode 11, versionName 0.4, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `0ef03f3e35dd2b0f646c7d6bdee4654b954c7bc07af40684dedcdf324a1b2ba9`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2/v0.3.3/v0.3.4, installs as an update).
+- Fixes the NetworkOnMainThreadException that killed the session on
+  reopen, plus the Session polish, bottom info panels and icon
+  padding from the v0.4 design update.
 
 ## v0.3.4 release APK
 

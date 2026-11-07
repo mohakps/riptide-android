@@ -1,6 +1,7 @@
 package com.riptide.ui.session
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +24,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -34,6 +37,7 @@ import com.riptide.ui.model.TransferDirection
 import com.riptide.ui.theme.MonospaceFontFamily
 import com.riptide.ui.theme.RiptideColors
 import com.riptide.util.formatBytes
+import com.riptide.util.formatBytesPair
 
 /**
  * States 08 (ready), 09 (transfer), 10 (verifying / waiting for ack).
@@ -187,38 +191,80 @@ fun ActiveTransferHero(
                         )
                     }
                     Spacer(Modifier.height(12.dp))
+                    // Fixed two-column metrics: size LEFT, speed RIGHT.
+                    // Never one wrapping line; Cancel gets its own footer.
+                    val speedText = when {
+                        busyPhase == BusyPhase.VERIFYING || busyPhase == BusyPhase.WAITING_ACK -> "—"
+                        activeTransfer.speedFormatted.isBlank() || activeTransfer.speedFormatted == "0 B/s" -> "—"
+                        else -> activeTransfer.speedFormatted
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "${formatBytes(activeTransfer.transferredBytes)} / ${formatBytes(activeTransfer.totalBytes)}" +
-                                    if (busyPhase == BusyPhase.VERIFYING || busyPhase == BusyPhase.WAITING_ACK) "" else " · ${activeTransfer.speedFormatted}",
+                                text = "Transferred",
                                 color = RiptideColors.OnSurfaceVariant,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp,
-                                lineHeight = 20.sp
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
                             )
-                            if (busyPhase == BusyPhase.VERIFYING) {
-                                Text(
-                                    text = "Checking SHA-256…",
-                                    color = RiptideColors.OnSurfaceVariant,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 13.sp,
-                                    lineHeight = 20.sp
-                                )
-                            } else if (busyPhase == BusyPhase.WAITING_ACK) {
-                                Text(
-                                    text = "Waiting for PC confirmation",
-                                    color = RiptideColors.OnSurfaceVariant,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 13.sp,
-                                    lineHeight = 20.sp
-                                )
-                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = formatBytesPair(activeTransfer.transferredBytes, activeTransfer.totalBytes),
+                                color = RiptideColors.OnSurface,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 14.sp,
+                                lineHeight = 20.sp,
+                                modifier = Modifier.semantics {
+                                    contentDescription = "Transferred ${formatBytes(activeTransfer.transferredBytes)} of ${formatBytes(activeTransfer.totalBytes)}"
+                                }
+                            )
                         }
-                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Speed",
+                                color = RiptideColors.OnSurfaceVariant,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = speedText,
+                                color = RiptideColors.OnSurface,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 14.sp,
+                                lineHeight = 20.sp,
+                                modifier = Modifier.semantics {
+                                    contentDescription = if (speedText == "—") "Speed unavailable" else "Speed $speedText"
+                                }
+                            )
+                        }
+                    }
+                    if (busyPhase == BusyPhase.VERIFYING) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "Checking SHA-256…",
+                            color = RiptideColors.OnSurfaceVariant,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                            lineHeight = 20.sp
+                        )
+                    } else if (busyPhase == BusyPhase.WAITING_ACK) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "Waiting for PC confirmation",
+                            color = RiptideColors.OnSurfaceVariant,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                            lineHeight = 20.sp
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
                         Button(
                             onClick = onCancel,
                             shape = RoundedCornerShape(28.dp),
