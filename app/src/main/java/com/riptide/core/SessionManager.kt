@@ -240,6 +240,11 @@ class SessionManager(private val context: Context) {
                 _approvalPhase.value = ApprovalPhase.NONE
                 _connection.value = ConnectionState.CONNECTED
                 lastConnectedHost = host
+                // A new session starts with an empty transfer list: the
+                // Session page shows THIS SESSION only, never the
+                // previous session's transfers. The durable received
+                // history (Received tab) is separate and untouched.
+                _history.value = emptyList()
                 peers.markConnected(host)
                 _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
                 startSessionService()

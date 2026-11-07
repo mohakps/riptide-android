@@ -2,6 +2,19 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.3: session history and label cleanup
+
+- The Session page's THIS SESSION list now starts empty on every
+  session: the in-memory transfer history is cleared when a session
+  connects, so a previous session's transfers never show up there.
+  The durable received history (Received tab) is separate and
+  untouched.
+- Devices tab: removed the "YOUR SAVED CONNECTIONS" label and the
+  "Tap a device to join. Use its menu to forget it." footer line.
+- Received tab: removed the "ON THIS PHONE" label.
+
+No APK built for 0.3 yet.
+
 ## v0.2.2: background disconnect fix
 
 Minimising the app for more than a few seconds, or opening the system

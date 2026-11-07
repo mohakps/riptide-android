@@ -56,16 +56,6 @@ fun DevicesScreen(
             ) {
                 Spacer(modifier = Modifier.height(24.dp))
                 Text(
-                    text = "YOUR SAVED CONNECTIONS",
-                    color = RiptideColors.OnSurfaceVariant,
-                    fontFamily = MonospaceFontFamily,
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp,
-                    letterSpacing = 1.3.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
                     text = "Devices",
                     color = RiptideColors.OnSurface,
                     fontSize = 32.sp,
@@ -119,13 +109,6 @@ fun DevicesScreen(
                         }
                     }
                     Spacer(modifier = Modifier.height(24.dp))
-                    Text(
-                        text = "Tap a device to join. Use its menu to forget it.",
-                        color = RiptideColors.OnSurfaceVariant,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "Saved identity does not mean the PC is online.",
                         color = RiptideColors.OnSurfaceVariant,

@@ -81,16 +81,6 @@ fun ReceivedScreen(
             ) {
                 Spacer(modifier = Modifier.height(24.dp))
                 Text(
-                    text = "ON THIS PHONE",
-                    color = RiptideColors.OnSurfaceVariant,
-                    fontFamily = MonospaceFontFamily,
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp,
-                    letterSpacing = 1.3.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
                     text = "Received",
                     color = RiptideColors.OnSurface,
                     fontSize = 32.sp,
