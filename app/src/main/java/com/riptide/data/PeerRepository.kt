@@ -12,7 +12,14 @@ import org.json.JSONObject
 
 private val Context.dataStore by preferencesDataStore(name = "riptide")
 
-data class SavedPeerRecord(val name: String, val host: String, val fingerprint: String)
+data class SavedPeerRecord(
+    val name: String,
+    val host: String,
+    val fingerprint: String,
+    /** Epoch ms of the last successful connection; 0 = never. Only a
+     * successful hello_ok updates this, never a failed attempt. */
+    val lastSuccessfulConnection: Long = 0L
+)
 
 class PeerRepository(private val context: Context) {
     private val peersKey = stringPreferencesKey("saved_peers")
@@ -37,9 +44,24 @@ class PeerRepository(private val context: Context) {
                 val arr = JSONArray(raw)
                 List(arr.length()) { i ->
                     val o = arr.getJSONObject(i)
-                    SavedPeerRecord(o.optString("name"), o.optString("host"), o.optString("fingerprint"))
+                    SavedPeerRecord(
+                        o.optString("name"), o.optString("host"), o.optString("fingerprint"),
+                        o.optLong("lastSuccessfulConnection", 0L)
+                    )
                 }
             } catch (_: Exception) { emptyList() }
+        }
+    }
+
+    /** Record a successful connection for ordering. Failed attempts never call this. */
+    fun markConnected(host: String) {
+        runBlocking {
+            val list = loadPeers().toMutableList()
+            val idx = list.indexOfFirst { it.host == host }
+            if (idx >= 0) {
+                list[idx] = list[idx].copy(lastSuccessfulConnection = System.currentTimeMillis())
+                persist(list)
+            }
         }
     }
 
@@ -61,7 +83,7 @@ class PeerRepository(private val context: Context) {
 
     private suspend fun persist(list: List<SavedPeerRecord>) {
         val arr = JSONArray()
-        list.forEach { arr.put(JSONObject().apply { put("name", it.name); put("host", it.host); put("fingerprint", it.fingerprint) }) }
+        list.forEach { arr.put(JSONObject().apply { put("name", it.name); put("host", it.host); put("fingerprint", it.fingerprint); put("lastSuccessfulConnection", it.lastSuccessfulConnection) }) }
         context.dataStore.edit { it[peersKey] = arr.toString() }
     }
 }

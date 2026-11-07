@@ -9,12 +9,18 @@ class PeerApprovalSheetTest {
     @Test
     fun testButtonLabelForNewHost() {
         val request = ApprovalRequest(host = "metalvoid.ddns.net", code = "193-046", fullFingerprint = "1234567890abcdef", trustStatus = TrustStatus.NEW)
-        assertEquals("Allow Connection", getApprovalButtonLabel(request.trustStatus))
+        assertEquals("Allow connection", getApprovalButtonLabel(request.trustStatus))
     }
 
     @Test
     fun testButtonLabelForChangedHost() {
-        val request = ApprovalRequest(host = "metalvoid.ddns.net", code = "193-046", fullFingerprint = "1234567890abcdef", trustStatus = TrustStatus.CHANGED, oldCode = "000-001")
-        assertEquals("Replace & Accept", getApprovalButtonLabel(request.trustStatus))
+        val request = ApprovalRequest(host = "metalvoid.ddns.net", code = "193-046", fullFingerprint = "1234567890abcdef", trustStatus = TrustStatus.CHANGED, oldCode = "482-610")
+        assertEquals("Replace and accept", getApprovalButtonLabel(request.trustStatus))
+    }
+
+    @Test
+    fun testButtonLabelForKnownHost() {
+        val request = ApprovalRequest(host = "metalvoid.ddns.net", code = "193-046", fullFingerprint = "1234567890abcdef", trustStatus = TrustStatus.KNOWN)
+        assertEquals("Continue", getApprovalButtonLabel(request.trustStatus))
     }
 }

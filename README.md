@@ -1,6 +1,36 @@
-# Riptide Android v0.1.1
+# Riptide Android v0.2
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
+
+## v0.2: final approved UI
+
+Exact implementation of the approved Stacked Blocks design. Home is three
+widgets with no enclosing card: a full-width THIS DEVICE tile, then an
+ivory MY CODE tile (62.5%) and a charcoal Fingerprint tile (37.5%), with a
+final 32 dp blank gap before the Join PC heading. Bottom tabs are Transfer,
+Devices, Received; the gear opens Settings.
+
+- After Allow connection, the same trust sheet becomes "Waiting for
+  approval from host" and shows the PHONE'S six-digit code. The host code
+  stays on the preceding trust screen. Only the host's hello_ok opens the
+  Session; local Allow alone never does. Cancel aborts and ignores a late
+  success.
+- Join never navigates on its own. The Transfer tab shows Home while idle
+  and the live Session once connected; switching tabs never cancels a
+  transfer or disconnects.
+- Received history is persisted across restarts. Only files that pass
+  SHA-256 verification AND save to Downloads/Riptide are recorded, with
+  the actual saved name, source PC, size, and timestamp. Tapping a file
+  opens it; a missing file reports "File no longer available" and its
+  stale record is removed. Removing a record never deletes the file.
+- Recent devices sort by last successful connection. Failed attempts never
+  reorder them. Forget removes the peer, not the phone identity.
+- A second transfer is blocked while preparing, transferring, verifying,
+  waiting for the PC ack, or waiting for download approval. Send waits for
+  the PC ack; receive waits for hash verification and saving. A download
+  decline is shown as its own state with retry, distinct from a transport
+  error. Cancel and disconnect warn that the file must restart.
+- File picking uses single-document ACTION_OPEN_DOCUMENT.
 
 ## v0.1.1 fix
 
@@ -14,7 +44,7 @@ come from the same file, and the phone now waits for the PC's ack before
 calling a send successful, so a rejection or a lost connection is
 reported instead of a false success.
 
-## What v0.1 does
+## What v0.2 does
 
 - Join a PC on Create Server at port 50000, by hostname, IPv4, IPv6, or user@host.
 - Host fingerprint approval: Known, New, Changed, with the 6-digit code first and the full fingerprint available. Changed needs an explicit Replace.
@@ -25,7 +55,7 @@ reported instead of a false success.
 - Receive folder is fixed at Downloads/Riptide.
 - Foreground service with a notification for an active transfer.
 
-## What v0.1 does not do
+## What v0.2 does not do
 
 - No Create/listener mode on the phone.
 - No share sheet, multi-file send, or resume. Interrupted transfers restart.
@@ -52,6 +82,12 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.2 release APK
+
+- `app-release.apk`, 47 MB, versionCode 3, versionName 0.2, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `59f9690e317774313ac86afe5f4fab8f80bcbbb5bc7ba681b1b2bd680282d97c`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1, installs as an update).
 
 ## v0.1.1 release APK
 

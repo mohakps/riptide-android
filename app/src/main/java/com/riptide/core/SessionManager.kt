@@ -7,9 +7,14 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.riptide.data.PeerRepository
+import com.riptide.data.ReceivedHistoryRepository
 import com.riptide.data.SavedPeerRecord
 import com.riptide.ui.model.ActiveTransfer
+import com.riptide.ui.model.ApprovalPhase
 import com.riptide.ui.model.ApprovalRequest
+import com.riptide.ui.model.BusyPhase
+import com.riptide.ui.model.DownloadState
+import com.riptide.ui.model.ReceivedFileRecord
 import com.riptide.ui.model.TransferDirection
 import com.riptide.ui.model.TransferRecord
 import com.riptide.ui.model.TransferStatus
@@ -25,6 +30,7 @@ import java.net.Socket
 import java.security.MessageDigest
 import java.security.cert.Certificate
 import java.security.cert.X509Certificate
+import java.util.Locale
 import java.util.UUID
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
@@ -69,6 +75,7 @@ class SessionManager(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val identity = IdentityManager(context)
     private val peers = PeerRepository(context)
+    private val receivedHistoryRepo = ReceivedHistoryRepository(context.filesDir)
 
     val myCode: String get() = try { identity.code() } catch (_: Exception) { "------" }
     val myFingerprint: String get() = try { identity.fingerprint() } catch (_: Exception) { "" }
@@ -78,6 +85,10 @@ class SessionManager(private val context: Context) {
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
     private val _approval = MutableStateFlow<ApprovalRequest?>(null)
     val approval: StateFlow<ApprovalRequest?> = _approval.asStateFlow()
+    /** LOCAL_TRUST shows the HOST code; WAITING_HOST shows the PHONE code in
+     * the same sheet after local approval, until the host acknowledges. */
+    private val _approvalPhase = MutableStateFlow(ApprovalPhase.NONE)
+    val approvalPhase: StateFlow<ApprovalPhase> = _approvalPhase.asStateFlow()
     private val _peerName = MutableStateFlow("")
     val peerName: StateFlow<String> = _peerName.asStateFlow()
     private val _peerHost = MutableStateFlow("")
@@ -86,31 +97,52 @@ class SessionManager(private val context: Context) {
     val pingMs: StateFlow<Long> = _pingMs.asStateFlow()
     private val _active = MutableStateFlow<ActiveTransfer?>(null)
     val active: StateFlow<ActiveTransfer?> = _active.asStateFlow()
+    /** Non-null while preparing, verifying or waiting for a send ack. Blocks a second transfer. */
+    private val _busyPhase = MutableStateFlow<BusyPhase?>(null)
+    val busyPhase: StateFlow<BusyPhase?> = _busyPhase.asStateFlow()
+    private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
+    val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
     private val _history = MutableStateFlow<List<TransferRecord>>(emptyList())
     val history: StateFlow<List<TransferRecord>> = _history.asStateFlow()
+    private val _receivedHistory = MutableStateFlow<List<ReceivedFileRecord>>(emptyList())
+    val receivedHistory: StateFlow<List<ReceivedFileRecord>> = _receivedHistory.asStateFlow()
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
     private val _savedPeers = MutableStateFlow<List<SavedPeerRecord>>(emptyList())
+    /** Sorted by last successful connection, most recent first. */
     val savedPeers: StateFlow<List<SavedPeerRecord>> = _savedPeers.asStateFlow()
 
     private var socket: SSLSocket? = null
     private var readerJob: Job? = null
     private var heartbeatJob: Job? = null
+    private var connectJob: Job? = null
+    /** Incremented on every cancel; a dial that finishes after its generation
+     * changed is stale and must not open a session. */
+    @Volatile private var attemptGeneration = 0
     private val sendMutex = Mutex()
     private var approvalDecision: ((Boolean) -> Unit)? = null
     private var currentHost: String = ""
-    private var downloadDeniedHandler: ((String) -> Unit)? = null
     /** Completed by the reader when the PC acks the file being sent. Only one
      * transfer runs at a time, so the next ack is always for this send. */
     private data class AckResult(val name: String, val ok: Boolean, val reason: String)
     @Volatile private var pendingAck: CompletableDeferred<AckResult?>? = null
 
     init {
-        scope.launch { _savedPeers.value = peers.loadPeers() }
+        scope.launch {
+            _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
+            _receivedHistory.value = receivedHistoryRepo.load()
+        }
     }
 
     fun refreshPeers() {
-        scope.launch { _savedPeers.value = peers.loadPeers() }
+        scope.launch { _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection } }
+    }
+
+    fun removeReceivedRecord(id: String) {
+        scope.launch {
+            receivedHistoryRepo.remove(id)
+            _receivedHistory.value = receivedHistoryRepo.load()
+        }
     }
 
     fun setDeviceName(name: String) {
@@ -120,24 +152,51 @@ class SessionManager(private val context: Context) {
     fun forgetPeer(host: String) {
         scope.launch {
             peers.forgetPeer(host)
-            _savedPeers.value = peers.loadPeers()
+            _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
         }
     }
 
     fun clearError() { _error.value = null }
 
+    fun clearDownloadDenied() {
+        if (_downloadState.value is DownloadState.Denied) _downloadState.value = DownloadState.Idle
+    }
+
     fun approveConnection(allow: Boolean) {
+        if (allow) {
+            // The same sheet now becomes "Waiting for approval from host"
+            // and shows the PHONE's code while the hello exchange runs.
+            _approvalPhase.value = ApprovalPhase.WAITING_HOST
+        }
         approvalDecision?.invoke(allow)
         approvalDecision = null
         if (!allow) {
             _approval.value = null
+            _approvalPhase.value = ApprovalPhase.NONE
             _connection.value = ConnectionState.IDLE
         }
     }
 
+    /** Abort a pending Join (connecting, local trust, or host waiting).
+     * Closes the socket, cancels the attempt, and invalidates any late
+     * success callback via the generation counter. */
+    fun cancelConnect() {
+        attemptGeneration++
+        connectJob?.cancel()
+        connectJob = null
+        approvalDecision?.invoke(false)
+        approvalDecision = null
+        _approval.value = null
+        _approvalPhase.value = ApprovalPhase.NONE
+        _error.value = null
+        closeSocket()
+        _connection.value = ConnectionState.IDLE
+    }
+
     fun connect(hostInput: String) {
         if (_connection.value == ConnectionState.CONNECTING) return
-        scope.launch {
+        val generation = attemptGeneration
+        connectJob = scope.launch {
             _error.value = null
             _connection.value = ConnectionState.CONNECTING
             try {
@@ -145,19 +204,40 @@ class SessionManager(private val context: Context) {
                 currentHost = host
                 _peerHost.value = host
                 val session = dial(host)
-                _peerName.value = session.peerDevice
+                // A late success after Cancel must never open a session.
+                if (generation != attemptGeneration) {
+                    try { session.socket.close() } catch (_: Exception) {}
+                    return@launch
+                }
+                _peerName.value = session.peerDevice.ifBlank { host }
+                _approval.value = null
+                _approvalPhase.value = ApprovalPhase.NONE
                 _connection.value = ConnectionState.CONNECTED
+                peers.markConnected(host)
+                _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
                 startReader(session)
                 startHeartbeat(session)
             } catch (e: Exception) {
-                _error.value = friendlyError(e)
-                _connection.value = ConnectionState.FAILED
+                if (generation != attemptGeneration) return@launch
+                _approval.value = null
+                _approvalPhase.value = ApprovalPhase.NONE
+                if ("denied the fingerprint" in (e.message ?: "")) {
+                    // A deliberate Deny is not an error state.
+                    _error.value = null
+                    _connection.value = ConnectionState.IDLE
+                } else {
+                    _error.value = friendlyError(e)
+                    _connection.value = ConnectionState.FAILED
+                }
                 closeSocket()
             }
         }
     }
 
     fun disconnect() {
+        attemptGeneration++
+        connectJob?.cancel()
+        connectJob = null
         scope.launch {
             try {
                 sendMutex.withLock {
@@ -169,6 +249,10 @@ class SessionManager(private val context: Context) {
             readerJob?.cancel()
             heartbeatJob?.cancel()
             closeSocket()
+            _approval.value = null
+            _approvalPhase.value = ApprovalPhase.NONE
+            _busyPhase.value = null
+            _downloadState.value = DownloadState.Idle
             _connection.value = ConnectionState.IDLE
             _active.value = null
         }
@@ -181,6 +265,7 @@ class SessionManager(private val context: Context) {
 
     private data class DialResult(val socket: SSLSocket, val peerDevice: String, val serverFingerprint: String)
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private suspend fun dial(host: String): DialResult {
         val capturing = object : X509TrustManager {
             var chain: Array<X509Certificate>? = null
@@ -220,19 +305,24 @@ class SessionManager(private val context: Context) {
         if (status != TrustStatus.KNOWN) {
             val decision = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { cont ->
                 approvalDecision = { allow -> if (cont.isActive) cont.resume(allow) {} }
+                _approvalPhase.value = ApprovalPhase.LOCAL_TRUST
                 _approval.value = ApprovalRequest(
                     host = host, code = derive6DigitCode(serverFp), fullFingerprint = serverFp,
                     trustStatus = status, oldCode = oldCode, oldFingerprint = oldFp.ifBlank { null }
                 )
             }
-            _approval.value = null
             if (!decision) {
+                _approval.value = null
+                _approvalPhase.value = ApprovalPhase.NONE
                 try { tls.close() } catch (_: Exception) {}
                 throw IllegalStateException("client denied the fingerprint")
             }
+            // Local approval given: the sheet stays up in WAITING_HOST phase
+            // (set by approveConnection) showing the PHONE's code until the
+            // host acknowledges with hello_ok below. Do not clear it here.
             if (status == TrustStatus.NEW || status == TrustStatus.CHANGED) {
                 peers.savePeer(SavedPeerRecord(name = host, host = host, fingerprint = serverFp))
-                _savedPeers.value = peers.loadPeers()
+                _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
             }
         }
         val myDer = identity.certDer()
@@ -295,11 +385,15 @@ class SessionManager(private val context: Context) {
                 while (true) {
                     val header = JSONObject(String(readHeaderBytes(input)))
                     when (header.optString("type")) {
-                        "file" -> receiveFile(session, header, input)
+                        "file" -> {
+                            // A file arriving answers a pending download request.
+                            if (_downloadState.value is DownloadState.Waiting) _downloadState.value = DownloadState.Idle
+                            receiveFile(session, header, input)
+                        }
                         "download_denied" -> {
                             val name = header.optString("name")
+                            _downloadState.value = DownloadState.Denied(name)
                             addHistory(name, name, false, 0, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
-                            _error.value = "Download denied by PC: $name"
                         }
                         "ack" -> {
                             // Completes the send that is waiting for confirmation.
@@ -345,6 +439,7 @@ class SessionManager(private val context: Context) {
         val name = basenameOnly(header.optString("name"))
         val size = header.optLong("size")
         val expected = header.optString("sha256")
+        _busyPhase.value = BusyPhase.TRANSFERRING
         _active.value = ActiveTransfer(filename = name, direction = TransferDirection.RECEIVE, totalBytes = size, transferredBytes = 0, speedFormatted = "", progress = 0f, etaFormatted = null)
         val part = File(context.cacheDir, "$name.part")
         val digest = MessageDigest.getInstance("SHA-256")
@@ -378,24 +473,50 @@ class SessionManager(private val context: Context) {
             }
         } catch (e: Exception) {
             _active.value = null
+            _busyPhase.value = null
             addHistory(name, name, false, received, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
             _error.value = "receive failed: ${e.message}"
             return
         }
+        // 100% of bytes is not success yet: verify the hash, then save.
+        _busyPhase.value = BusyPhase.VERIFYING
         val ok = digest.digest().joinToString("") { "%02x".format(it) } == expected.lowercase()
         if (!ok) {
             _active.value = null
+            _busyPhase.value = null
             addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
             sendAck(session, name, false, "SHA-256 mismatch")
             return
         }
-        val savedName = saveToDownloads(part, name) ?: name
+        val saved = saveToDownloads(part, name)
+        if (saved == null) {
+            // Verification passed but saving failed: this is not a success,
+            // and it must not enter received history.
+            _active.value = null
+            _busyPhase.value = null
+            addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
+            _error.value = "Could not save $name to Downloads/Riptide"
+            sendAck(session, name, false, "save failed")
+            return
+        }
+        val (savedName, savedUri) = saved
         _active.value = null
+        _busyPhase.value = null
         addHistory(name, savedName, savedName != name, size, TransferDirection.RECEIVE, TransferStatus.SUCCESS, true)
+        // Durable received history: only after verification AND saving succeed.
+        val record = ReceivedFileRecord(
+            id = UUID.randomUUID().toString(), uri = savedUri, originalName = name,
+            savedName = savedName, sourcePeer = _peerName.value.ifBlank { _peerHost.value },
+            sizeBytes = size, verified = true
+        )
+        receivedHistoryRepo.add(record)
+        _receivedHistory.value = receivedHistoryRepo.load()
         sendAck(session, savedName, true, "")
     }
 
-    private fun saveToDownloads(part: File, name: String): String? {
+    /** Returns the actual saved name and its MediaStore content URI, or null
+     * when saving failed. The URI is what Received history opens later. */
+    private fun saveToDownloads(part: File, name: String): Pair<String, String>? {
         return try {
             val resolver: ContentResolver = context.contentResolver
             val existing = mutableSetOf<String>()
@@ -413,7 +534,7 @@ class SessionManager(private val context: Context) {
                 FileInputStream(part).use { inp -> inp.copyTo(out) }
             }
             part.delete()
-            saved
+            saved to uri.toString()
         } catch (_: Exception) {
             null
         }
@@ -427,6 +548,10 @@ class SessionManager(private val context: Context) {
     }
 
     fun sendFile(uri: Uri) {
+        if (_active.value != null || _busyPhase.value != null) {
+            _error.value = "A transfer is already in progress"
+            return
+        }
         scope.launch {
             val s = socket ?: run { _error.value = "Not connected"; return@launch }
             val resolver = context.contentResolver
@@ -438,6 +563,7 @@ class SessionManager(private val context: Context) {
                 }
             }
             name = basenameOnly(name)
+            _busyPhase.value = BusyPhase.PREPARING
             // Spool the picked file to a local temp copy first. The size
             // reported by a content provider (OpenableColumns.SIZE) is
             // not trustworthy: for cloud-backed files it can be 0 or
@@ -454,6 +580,7 @@ class SessionManager(private val context: Context) {
                 opened.use { inp -> FileOutputStream(spool).use { out -> inp.copyTo(out) } }
                 val (counted, sha) = FileInputStream(spool).use { hashAndCount(it) }
                 val size = counted
+                _busyPhase.value = BusyPhase.TRANSFERRING
                 _active.value = ActiveTransfer(name, TransferDirection.SEND, size, 0, "", 0f, null)
                 val header = JSONObject().apply { put("type", "file"); put("name", name); put("size", size); put("sha256", sha) }
                 val start = System.currentTimeMillis()
@@ -488,8 +615,10 @@ class SessionManager(private val context: Context) {
                     // acks only after reading every byte, verifying the
                     // SHA-256 and renaming the .part file. On success the
                     // ack carries the actual saved name.
+                    _busyPhase.value = BusyPhase.WAITING_ACK
                     val ack = withTimeout(60_000) { ackDeferred.await() }
                     _active.value = null
+                    _busyPhase.value = null
                     if (ack == null) {
                         addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
                         _error.value = "send failed: connection lost before PC confirmed $name ($sent of $size bytes sent)"
@@ -502,11 +631,13 @@ class SessionManager(private val context: Context) {
                 } catch (e: Exception) {
                     pendingAck = null
                     _active.value = null
+                    _busyPhase.value = null
                     addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
                     _error.value = "send failed: ${e.message} ($sent of $size bytes sent)"
                 }
             } catch (e: Exception) {
                 _active.value = null
+                _busyPhase.value = null
                 _error.value = "send failed: ${e.message}"
             } finally {
                 spool.delete()
@@ -515,14 +646,19 @@ class SessionManager(private val context: Context) {
     }
 
     fun requestDownload(name: String) {
+        if (_downloadState.value is DownloadState.Waiting) return
         scope.launch {
             val s = socket ?: run { _error.value = "Not connected"; return@launch }
+            val trimmed = name.trim()
             try {
                 sendMutex.withLock {
-                    val ask = JSONObject().apply { put("type", "download_ask"); put("name", name.trim()); put("id", UUID.randomUUID().toString()) }
+                    val ask = JSONObject().apply { put("type", "download_ask"); put("name", trimmed); put("id", UUID.randomUUID().toString()) }
                     writeHeader(s.outputStream, ask.toString().toByteArray())
                 }
+                // The PC answers with a file (receive) or download_denied.
+                _downloadState.value = DownloadState.Waiting(trimmed)
             } catch (e: Exception) {
+                _downloadState.value = DownloadState.Idle
                 _error.value = "download request failed: ${e.message}"
             }
         }
@@ -534,9 +670,9 @@ class SessionManager(private val context: Context) {
 
     private fun formatSpeed(bytesPerSec: Double): String {
         return when {
-            bytesPerSec >= 1024 * 1024 -> String.format("%.1f MB/s", bytesPerSec / (1024 * 1024))
-            bytesPerSec >= 1024 -> String.format("%.1f KB/s", bytesPerSec / 1024)
-            else -> String.format("%.0f B/s", bytesPerSec)
+            bytesPerSec >= 1024 * 1024 -> String.format(Locale.US, "%.1f MB/s", bytesPerSec / (1024 * 1024))
+            bytesPerSec >= 1024 -> String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024)
+            else -> String.format(Locale.US, "%.0f B/s", bytesPerSec)
         }
     }
 
