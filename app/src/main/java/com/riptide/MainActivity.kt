@@ -31,6 +31,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.riptide.core.ConnectionState
+import com.riptide.core.DiagLog
 import com.riptide.core.SessionManager
 import com.riptide.ui.approval.PeerApprovalSheet
 import com.riptide.ui.components.PhoneFingerprintSheet
@@ -73,6 +74,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // v0.3.4 test build: log the return so the diagnostics log shows
+        // exactly when the app came back, against any session failure.
+        DiagLog.log("activity", "onResume")
         // The app was in the background: the session may have died
         // while it was away. Verify it is still alive, and rejoin the
         // last peer on its own when it is not. The system file picker
@@ -81,13 +85,25 @@ class MainActivity : ComponentActivity() {
         activityScope.launch { (application as RiptideApp).session.onReturnedToForeground() }
     }
 
+    override fun onPause() {
+        DiagLog.log("activity", "onPause")
+        super.onPause()
+    }
+
+    override fun onStop() {
+        DiagLog.log("activity", "onStop")
+        super.onStop()
+    }
+
     override fun onDestroy() {
+        DiagLog.log("activity", "onDestroy")
         activityScope.cancel()
         super.onDestroy()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DiagLog.log("activity", "onCreate")
         val app = application as RiptideApp
         val session = app.session
         setContent {

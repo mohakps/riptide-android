@@ -2,6 +2,24 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.3.4: diagnostic test build for the background disconnect
+
+- Test build only, to find why the session dies when the app is
+  minimised and reopened. It changes no connection behaviour: the
+  verifyAlive retry from 0.3.3 is untouched.
+- Every connect, reader event (ping, pong, bye, error, ack, file),
+  heartbeat ping, verifyAlive attempt, session failure and activity
+  and service lifecycle event is logged with a wall-clock timestamp
+  to logcat and to a diagnostics file. The failure line names the
+  caller (verifyAlive, heartbeat, reader) and the exact exception,
+  so the log shows whether the session died while minimised or on
+  return, and what killed it.
+- The log is mirrored live to Downloads/Riptide/riptide-diagnostics.log
+  and can also be exported from Settings, Share diagnostics log. The
+  internal copy is the reliable one; the Downloads mirror is best
+  effort. Logging is fully guarded and can never crash the app, break
+  a transfer, or fail a session.
+
 ## v0.3.3: do not kill a live session on one slow pong
 
 - Returning to the foreground verifies the session with a ping and
@@ -212,6 +230,13 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.3.4 release APK
+
+- `app-release.apk`, 48 MB, versionCode 10, versionName 0.3.4, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `4b22491de19f8a9242b9a97e14a742227a6a3ede5b80602178ee8f887cf9cdf0`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2/v0.3.3, installs as an update).
+- Diagnostic test build only. No connection behaviour changed.
 
 ## v0.3.3 release APK
 

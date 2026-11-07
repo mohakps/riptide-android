@@ -8,6 +8,7 @@ import android.os.PowerManager
 import com.riptide.MainActivity
 import com.riptide.RiptideApp
 import com.riptide.core.ConnectionState
+import com.riptide.core.DiagLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,6 +23,7 @@ class TransferService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        DiagLog.log("service", "onStartCommand action=${intent?.action}")
         if (intent?.action == TransferNotificationHelper.ACTION_CANCEL) {
             (application as RiptideApp).session.disconnect()
             stopSelf()
@@ -67,6 +69,7 @@ class TransferService : Service() {
                 // where the connection drops without the manager
                 // noticing first.
                 if (connection != ConnectionState.CONNECTED) {
+                    DiagLog.log("service", "connection=$connection, stopSelf")
                     stopSelf()
                     return@collect
                 }
@@ -87,6 +90,7 @@ class TransferService : Service() {
     }
 
     override fun onDestroy() {
+        DiagLog.log("service", "onDestroy")
         job?.cancel()
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) {}
         super.onDestroy()

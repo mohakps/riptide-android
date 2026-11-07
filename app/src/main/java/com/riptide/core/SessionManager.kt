@@ -148,6 +148,8 @@ class SessionManager(private val context: Context) {
     @Volatile private var pendingAck: CompletableDeferred<AckResult?>? = null
 
     init {
+        DiagLog.init(context)
+        DiagLog.log("session", "SessionManager created")
         scope.launch {
             _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
             _receivedHistory.value = receivedHistoryRepo.load()
@@ -201,6 +203,7 @@ class SessionManager(private val context: Context) {
      * Closes the socket, cancels the attempt, and invalidates any late
      * success callback via the generation counter. */
     fun cancelConnect() {
+        DiagLog.log("session", "cancelConnect (user)")
         attemptGeneration++
         connectJob?.cancel()
         connectJob = null
@@ -217,6 +220,7 @@ class SessionManager(private val context: Context) {
 
     fun connect(hostInput: String) {
         if (_connection.value == ConnectionState.CONNECTING) return
+        DiagLog.log("session", "connect start host=$hostInput")
         // Set CONNECTING synchronously, before launching: two rapid
         // connects (double tap, or a resume rejoin racing a manual
         // Join) must not both dial.
@@ -230,6 +234,7 @@ class SessionManager(private val context: Context) {
                 currentHost = host
                 _peerHost.value = host
                 val session = dial(host)
+                DiagLog.log("session", "dial ok host=$host device=${session.peerDevice}")
                 // A late success after Cancel must never open a session.
                 if (generation != attemptGeneration) {
                     try { session.socket.close() } catch (_: Exception) {}
@@ -239,6 +244,7 @@ class SessionManager(private val context: Context) {
                 _approval.value = null
                 _approvalPhase.value = ApprovalPhase.NONE
                 _connection.value = ConnectionState.CONNECTED
+                DiagLog.log("session", "CONNECTED host=$host")
                 lastConnectedHost = host
                 // A new session starts with an empty transfer list: the
                 // Session page shows THIS SESSION only, never the
@@ -256,6 +262,7 @@ class SessionManager(private val context: Context) {
                 startHeartbeat(session)
             } catch (e: Exception) {
                 if (generation != attemptGeneration) return@launch
+                DiagLog.log("session", "connect failed: ${e::class.simpleName}: ${e.message}")
                 _approval.value = null
                 _approvalPhase.value = ApprovalPhase.NONE
                 if ("denied the fingerprint" in (e.message ?: "")) {
@@ -272,6 +279,7 @@ class SessionManager(private val context: Context) {
     }
 
     fun disconnect() {
+        DiagLog.log("session", "disconnect (user)")
         attemptGeneration++
         connectJob?.cancel()
         connectJob = null
@@ -311,16 +319,29 @@ class SessionManager(private val context: Context) {
      * always happens while the app is in the foreground, so the
      * background start restriction on Android 12+ never applies. */
     private fun startSessionService() {
+        DiagLog.log("service", "startSessionService requested")
         try {
             ContextCompat.startForegroundService(
                 context, Intent(context, TransferService::class.java)
             )
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            DiagLog.log("service", "startForegroundService FAILED: ${e::class.simpleName}: ${e.message}")
+        }
     }
 
     private fun stopSessionService() {
+        DiagLog.log("service", "stopSessionService requested")
         try { context.stopService(Intent(context, TransferService::class.java)) } catch (_: Exception) {}
     }
+
+    /** Short caller chain for the diagnostics log, so a failSession line
+     * names the path that killed the session (verifyAlive, heartbeat,
+     * reader) instead of just the error string. */
+    private fun callerTrace(): String =
+        Throwable().stackTrace
+            .filter { it.className.contains("com.riptide") }
+            .take(5)
+            .joinToString(" <- ") { "${it.methodName}:${it.lineNumber}" }
 
     /** One place where a session dies unexpectedly: set the error, drop
      * to FAILED, close the dead socket, and stop the service. Every
@@ -328,6 +349,7 @@ class SessionManager(private val context: Context) {
      * forgotten again. */
     private fun failSession(error: String) {
         if (_connection.value != ConnectionState.CONNECTED) return
+        DiagLog.log("fail", "failSession: $error | caller: ${callerTrace()}")
         _error.value = error
         _connection.value = ConnectionState.FAILED
         closeSocket()
@@ -345,14 +367,17 @@ class SessionManager(private val context: Context) {
      * on either attempt. */
     private suspend fun verifyAlive(timeoutMs: Long = 3000, attempts: Int = 2): Boolean {
         if (_connection.value != ConnectionState.CONNECTED) return false
-        repeat(attempts) {
+        repeat(attempts) { attempt ->
             val before = _lastPongAt.value
+            DiagLog.log("verify", "attempt ${attempt + 1}/$attempts before=$before lastPongAt=${_lastPongAt.value}")
             try {
                 sendMutex.withLock {
                     val s = socket ?: return false
                     writeHeader(s.outputStream, JSONObject().put("type", "ping").toString().toByteArray())
                 }
-            } catch (_: Exception) {
+                DiagLog.log("verify", "ping sent (attempt ${attempt + 1})")
+            } catch (e: Exception) {
+                DiagLog.log("verify", "ping write FAILED: ${e::class.simpleName}: ${e.message}")
                 failSession("Connection lost.")
                 return false
             }
@@ -360,11 +385,16 @@ class SessionManager(private val context: Context) {
                 _lastPongAt.first { it > before }
                 true
             } ?: false
-            if (ok) return true
+            if (ok) {
+                DiagLog.log("verify", "pong received, alive (attempt ${attempt + 1})")
+                return true
+            }
+            DiagLog.log("verify", "pong TIMEOUT ${timeoutMs}ms (attempt ${attempt + 1})")
             // No pong for this ping. A late pong still counts for the
             // next attempt, since each attempt captures a fresh
             // `before` above.
         }
+        DiagLog.log("verify", "no pong on either attempt, failing session")
         failSession("Connection lost.")
         return false
     }
@@ -379,16 +409,19 @@ class SessionManager(private val context: Context) {
      * still waits for the PC's approval tap; the waiting sheet shows
      * as usual while it waits. */
     suspend fun onReturnedToForeground() {
+        DiagLog.log("session", "onReturnedToForeground connection=${_connection.value}")
         if (_connection.value == ConnectionState.CONNECTED) {
             verifyAlive()
         }
         if (_connection.value == ConnectionState.FAILED) {
             val host = lastConnectedHost ?: return
+            DiagLog.log("session", "rejoining $host")
             connect(host)
         }
     }
 
     private fun closeSocket() {
+        DiagLog.log("session", "closeSocket")
         try { socket?.close() } catch (_: Exception) {}
         socket = null
     }
@@ -491,6 +524,7 @@ class SessionManager(private val context: Context) {
 
     private fun startHeartbeat(session: DialResult) {
         heartbeatJob?.cancel()
+        DiagLog.log("heartbeat", "started")
         heartbeatJob = scope.launch {
             val start = System.currentTimeMillis()
             while (true) {
@@ -502,6 +536,7 @@ class SessionManager(private val context: Context) {
                         }
                     }
                     _pingMs.value = System.currentTimeMillis() - start
+                    DiagLog.log("heartbeat", "ping sent")
                 } catch (e: Exception) {
                     // A cancelled heartbeat (deliberate disconnect) is not
                     // a failure. Any other write failure means the socket
@@ -511,6 +546,7 @@ class SessionManager(private val context: Context) {
                     // nothing marked the session dead until the next send
                     // tried to write to it. Detect it here, within 10 s.
                     if (e is kotlinx.coroutines.CancellationException) break
+                    DiagLog.log("heartbeat", "ping write FAILED: ${e::class.simpleName}: ${e.message}")
                     failSession("Connection lost.")
                     break
                 }
@@ -520,6 +556,7 @@ class SessionManager(private val context: Context) {
 
     private fun startReader(session: DialResult) {
         readerJob?.cancel()
+        DiagLog.log("reader", "started")
         readerJob = scope.launch {
             val input = session.socket.inputStream
             try {
@@ -527,16 +564,19 @@ class SessionManager(private val context: Context) {
                     val header = JSONObject(String(readHeaderBytes(input)))
                     when (header.optString("type")) {
                         "file" -> {
+                            DiagLog.log("reader", "file header: ${header.optString("name")}")
                             // A file arriving answers a pending download request.
                             if (_downloadState.value is DownloadState.Waiting) _downloadState.value = DownloadState.Idle
                             receiveFile(session, header, input)
                         }
                         "download_denied" -> {
                             val name = header.optString("name")
+                            DiagLog.log("reader", "download_denied: $name")
                             _downloadState.value = DownloadState.Denied(name)
                             addHistory(name, name, false, 0, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
                         }
                         "ack" -> {
+                            DiagLog.log("reader", "ack: ${header.optString("name")} ok=${header.optBoolean("ok")}")
                             // Completes the send that is waiting for confirmation.
                             // On success the PC sends the actual saved name, which
                             // may differ from the sent name when it was renamed.
@@ -546,6 +586,7 @@ class SessionManager(private val context: Context) {
                             pendingAck = null
                         }
                         "download_ask" -> {
+                            DiagLog.log("reader", "download_ask: ${header.optString("name")}")
                             sendMutex.withLock {
                                 val denied = JSONObject().apply {
                                     put("type", "download_denied")
@@ -556,12 +597,17 @@ class SessionManager(private val context: Context) {
                             }
                         }
                         "ping" -> {
+                            DiagLog.log("reader", "ping received, pong sent")
                             sendMutex.withLock {
                                 writeHeader(session.socket.outputStream, JSONObject().put("type", "pong").toString().toByteArray())
                             }
                         }
-                        "pong" -> { _lastPongAt.value = System.currentTimeMillis() }
+                        "pong" -> {
+                            _lastPongAt.value = System.currentTimeMillis()
+                            DiagLog.log("reader", "pong received, lastPongAt=${_lastPongAt.value}")
+                        }
                         "bye" -> {
+                            DiagLog.log("reader", "bye received")
                             // The PC ended the session cleanly. This is a
                             // session error, not a join failure: close the
                             // socket and drop to FAILED so the UI shows the
@@ -572,6 +618,7 @@ class SessionManager(private val context: Context) {
                             break
                         }
                         "error" -> {
+                            DiagLog.log("reader", "error: ${header.optString("message")}")
                             // Usually "no such file" answering a download
                             // request: a transfer error, not a dead session.
                             // Keep reading; if the PC really closed, the
@@ -588,6 +635,7 @@ class SessionManager(private val context: Context) {
                 // "session closed" for it used to leave a stale error on
                 // Home after a clean disconnect.
                 if (e is kotlinx.coroutines.CancellationException) return@launch
+                DiagLog.log("reader", "read FAILED: ${e::class.simpleName}: ${e.message}")
                 pendingAck?.complete(null)
                 pendingAck = null
                 // Drop the dead socket now. A later send must see

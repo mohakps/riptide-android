@@ -26,7 +26,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -36,6 +38,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.R
+import com.riptide.core.DiagLog
 import com.riptide.ui.theme.MonospaceFontFamily
 import com.riptide.ui.theme.RiptideColors
 
@@ -54,6 +57,8 @@ fun SettingsScreen(
 ) {
     val deviceName by viewModel.deviceName.collectAsState()
     val myCode by viewModel.myCode.collectAsState()
+    // v0.3.4 test build: export status for the diagnostics log button.
+    var exportStatus by remember { mutableStateOf<String?>(null) }
     // The actual installed version, read from the package — never hardcoded.
     val context = LocalContext.current
     val versionName = remember {
@@ -215,6 +220,43 @@ fun SettingsScreen(
                     fontSize = 14.sp,
                     lineHeight = 20.sp
                 )
+                Spacer(modifier = Modifier.height(32.dp))
+                Text(
+                    text = "DIAGNOSTICS",
+                    color = RiptideColors.OnSurfaceVariant,
+                    fontFamily = MonospaceFontFamily,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    letterSpacing = 1.3.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Test build only. The app logs connects, pings, pongs and session failures with timestamps.",
+                    color = RiptideColors.OnSurfaceVariant,
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp
+                )
+                TextButton(
+                    onClick = {
+                        exportStatus = if (DiagLog.exportToDownloads(context)) {
+                            "Saved to Downloads/Riptide/riptide-diagnostics.log"
+                        } else {
+                            "Export failed. No diagnostics log yet."
+                        }
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Share diagnostics log", color = RiptideColors.Primary, fontSize = 14.sp)
+                }
+                exportStatus?.let { status ->
+                    Text(
+                        text = status,
+                        color = RiptideColors.OnSurfaceVariant,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp
+                    )
+                }
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }

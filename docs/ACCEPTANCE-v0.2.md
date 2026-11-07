@@ -397,3 +397,32 @@ Fixes in v0.2.1 (versionCode 4):
 - Tests: ThemeTokensTest, PeerApprovalSheetTest, ReceivedHistoryRepositoryTest (NEW), FormatUtilsTest (NEW), FingerprintCodeTest (NEW), SessionViewModelTest (expanded gating).
 - README.md — v0.2 section, release APK details.
 - docs/ACCEPTANCE-v0.2.md — this file.
+
+## v0.3.4 addendum (diagnostic test build, 2026-11-08)
+
+- Purpose: find why the session dies when the app is minimised and
+  reopened on 0.3.2/0.3.3. No connection behaviour changed; the
+  verifyAlive retry from 0.3.3 is untouched.
+- New: core/DiagLog.kt. Logs (logcat + internal file + live mirror to
+  Downloads/Riptide/riptide-diagnostics.log, best effort) every
+  connect, reader event, heartbeat ping, verifyAlive attempt, session
+  failure with caller trace and exact exception, and activity/service
+  lifecycle events, all wall-clock stamped. Settings gains a Share
+  diagnostics log button that copies the full internal log to
+  Downloads/Riptide.
+- Instrumented: RiptideApp (process started), MainActivity (onCreate,
+  onResume, onPause, onStop, onDestroy), SessionManager (connect,
+  dial, reader, heartbeat, verifyAlive, failSession, closeSocket,
+  disconnect, cancelConnect, onReturnedToForeground, service
+  start/stop), TransferService (onStartCommand, onDestroy, collector
+  stopSelf).
+- Build evidence: full verify on this machine (assembleDebug,
+  testDebugUnitTest, lintDebug, assembleRelease) — BUILD SUCCESSFUL.
+  34 tests, 0 failures. Lint 0 errors, 22 warnings only
+  (GradleDependency, TrustAllX509TrustManager/CustomX509TrustManager
+  by design for TOFU, DataExtractionRules). Release APK 48 MB,
+  SHA-256 4b22491de19f8a9242b9a97e14a742227a6a3ede5b80602178ee8f887cf9cdf0,
+  apksigner v2 verified, same signing cert c7b64485 (installs as an
+  update).
+- Live phone test is the user's step: install, join the PC, minimise,
+  reopen, then Settings, Share diagnostics log, and send the file.
