@@ -2,6 +2,22 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.3.2: Block trident launcher icon (design 27)
+
+- Launcher icon is now design 27, Block trident, from the enlarged /
+  shaded v2 set, selected by the user on 2026-11-08. The seven
+  supplied Android XML resources were copied verbatim into
+  app/src/main/res (no trimming, recoloring or rescaling): coral
+  shaded foreground (#FF8C85 to #FF6B6B to #DF5B65, gradient from
+  (40,22) to (68,84)), full-bleed #1C1C1C background, flat white
+  monochrome, 108 x 108 dp canvas with the supplied 1.10 group
+  scale, adaptive definitions for v26 and v33 (monochrome on 33+).
+- Manifest now points at `@mipmap/ic_launcher` and
+  `@mipmap/ic_launcher_round`. The old `@drawable/ic_launcher` is
+  still in the project, unused by the manifest.
+- Nothing else changed: the in-app dot-wave wordmark and the Stacked
+  Blocks UI are untouched, and there is no custom splash screen.
+
 ## v0.3.1: saved peers show the device name
 
 - Recent devices (Transfer tab) and the Devices tab showed (ip, ip):
@@ -180,6 +196,13 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.3.2 release APK
+
+- `app-release.apk`, 47 MB, versionCode 8, versionName 0.3.2, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `d5e5761a2e5d042e9433360e88c2a93cca65925e034f10d0bf727b14084e7131`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1, installs as an update).
+- Launcher icon is design 27, Block trident, enlarged/shaded v2.
 
 ## v0.2.1 release APK
 
