@@ -44,4 +44,24 @@ object TransferNotificationHelper {
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancel", cancelIntent)
             .build()
     }
+
+    /** The persistent notification while a session is connected but no
+     * file is moving. This is what keeps the process alive in the
+     * background: the service is a foreground service from the moment
+     * the session connects, not only during a transfer. */
+    fun buildConnectedNotification(
+        context: Context,
+        peerName: String,
+        contentIntent: PendingIntent,
+        disconnectIntent: PendingIntent
+    ): Notification {
+        return NotificationCompat.Builder(context, CHANNEL_ID)
+            .setContentTitle("Connected to $peerName")
+            .setContentText("Riptide session is active")
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setOngoing(true)
+            .setContentIntent(contentIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", disconnectIntent)
+            .build()
+    }
 }

@@ -2,6 +2,43 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.2.2: background disconnect fix
+
+Minimising the app for more than a few seconds, or opening the system
+file picker (which backgrounds the app the same way), broke the
+connection. The cause was the foreground service: it only ran while a
+file was actively moving, and stopped itself the moment a transfer
+finished. While the user was connected and picking a file, no service
+was running at all, so the app was an ordinary cached process holding
+a socket, and Android reclaimed it within seconds.
+
+- The foreground service now runs for the whole session: it starts
+  when a session connects (from the app foreground, so the background
+  start restriction never applies) and stops only on disconnect or
+  session failure. A persistent "Connected to PC" notification shows
+  while idle, with a Disconnect action; the transfer progress
+  notification shows while a file moves. `startForeground` is called
+  synchronously in `onStartCommand`, so the 5-second start timeout
+  can never fire.
+- The partial wake lock is held for the session, with no timeout, and
+  released when the service stops.
+- Coming back to the foreground now verifies the session with a ping
+  and waits for the pong (a write into a dead socket proves nothing).
+  When the session died while the app was away, the app rejoins the
+  last peer on its own, using the identity already in the Keystore. A
+  deliberate disconnect clears the last host, so this never
+  reconnects after the user chose to leave. A rejoin of a Known peer
+  still waits for the PC's approval tap. Send and download now run
+  the same liveness check before starting.
+- No battery-setting change is needed: a running foreground service
+  is exempt from Doze network restrictions and App Standby throttling
+  while it runs.
+- Known limit: the `dataSync` service type is stopped by Android
+  after 6 hours. Real sessions last minutes; a session that ran that
+  long shows the interrupted card and rejoins on the next return.
+
+No APK was built for 0.2.2; the next release is 0.3.
+
 ## v0.2.1: Broken pipe diagnosis and fix
 
 Live test of v0.2 on the phone: send failed again with "send failed:

@@ -3,12 +3,15 @@ package com.riptide.core
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import androidx.core.content.ContextCompat
 import com.riptide.data.PeerRepository
 import com.riptide.data.ReceivedHistoryRepository
 import com.riptide.data.SavedPeerRecord
+import com.riptide.service.TransferService
 import com.riptide.ui.model.ActiveTransfer
 import com.riptide.ui.model.ApprovalPhase
 import com.riptide.ui.model.ApprovalRequest
@@ -45,11 +48,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import android.util.Base64 as AndroidBase64
 
@@ -95,6 +100,10 @@ class SessionManager(private val context: Context) {
     val peerHost: StateFlow<String> = _peerHost.asStateFlow()
     private val _pingMs = MutableStateFlow(0L)
     val pingMs: StateFlow<Long> = _pingMs.asStateFlow()
+    /** Wall-clock time of the last pong received. verifyAlive watches this
+     * move: a ping write that succeeds into a dead socket proves nothing,
+     * the pong coming back does. */
+    private val _lastPongAt = MutableStateFlow(0L)
     private val _active = MutableStateFlow<ActiveTransfer?>(null)
     val active: StateFlow<ActiveTransfer?> = _active.asStateFlow()
     /** Non-null while preparing, verifying or waiting for a send ack. Blocks a second transfer. */
@@ -128,6 +137,11 @@ class SessionManager(private val context: Context) {
     private val sendMutex = Mutex()
     private var approvalDecision: ((Boolean) -> Unit)? = null
     private var currentHost: String = ""
+    /** Host of the last session that reached CONNECTED. Set only on a
+     * successful connect, cleared on a deliberate disconnect or cancel,
+     * so an automatic rejoin never fires after the user chose to leave
+     * or after a Join that never connected. */
+    private var lastConnectedHost: String? = null
     /** Completed by the reader when the PC acks the file being sent. Only one
      * transfer runs at a time, so the next ack is always for this send. */
     private data class AckResult(val name: String, val ok: Boolean, val reason: String)
@@ -196,17 +210,21 @@ class SessionManager(private val context: Context) {
         _approvalPhase.value = ApprovalPhase.NONE
         _error.value = null
         _transferError.value = null
+        lastConnectedHost = null
         closeSocket()
         _connection.value = ConnectionState.IDLE
     }
 
     fun connect(hostInput: String) {
         if (_connection.value == ConnectionState.CONNECTING) return
+        // Set CONNECTING synchronously, before launching: two rapid
+        // connects (double tap, or a resume rejoin racing a manual
+        // Join) must not both dial.
+        _connection.value = ConnectionState.CONNECTING
         val generation = attemptGeneration
         connectJob = scope.launch {
             _error.value = null
             _transferError.value = null
-            _connection.value = ConnectionState.CONNECTING
             try {
                 val host = parseHostInput(hostInput)
                 currentHost = host
@@ -221,8 +239,10 @@ class SessionManager(private val context: Context) {
                 _approval.value = null
                 _approvalPhase.value = ApprovalPhase.NONE
                 _connection.value = ConnectionState.CONNECTED
+                lastConnectedHost = host
                 peers.markConnected(host)
                 _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
+                startSessionService()
                 startReader(session)
                 startHeartbeat(session)
             } catch (e: Exception) {
@@ -246,6 +266,7 @@ class SessionManager(private val context: Context) {
         attemptGeneration++
         connectJob?.cancel()
         connectJob = null
+        lastConnectedHost = null
         scope.launch {
             try {
                 sendMutex.withLock {
@@ -257,6 +278,7 @@ class SessionManager(private val context: Context) {
             readerJob?.cancel()
             heartbeatJob?.cancel()
             closeSocket()
+            stopSessionService()
             _approval.value = null
             _approvalPhase.value = ApprovalPhase.NONE
             _error.value = null
@@ -265,6 +287,84 @@ class SessionManager(private val context: Context) {
             _downloadState.value = DownloadState.Idle
             _connection.value = ConnectionState.IDLE
             _active.value = null
+        }
+    }
+
+    /** The foreground service runs for the whole session, not just while
+     * a file is moving. That is the entire fix for the background
+     * disconnect: with no service running, minimising the app (or
+     * opening the system file picker, which backgrounds the app the
+     * same way) left an ordinary cached process holding the socket,
+     * and Android reclaimed it within seconds. A running foreground
+     * service is exempt from Doze network restrictions and App Standby
+     * throttling while it runs, so no battery-setting change is needed.
+     * The service is started only from a successful connect, which
+     * always happens while the app is in the foreground, so the
+     * background start restriction on Android 12+ never applies. */
+    private fun startSessionService() {
+        try {
+            ContextCompat.startForegroundService(
+                context, Intent(context, TransferService::class.java)
+            )
+        } catch (_: Exception) {}
+    }
+
+    private fun stopSessionService() {
+        try { context.stopService(Intent(context, TransferService::class.java)) } catch (_: Exception) {}
+    }
+
+    /** One place where a session dies unexpectedly: set the error, drop
+     * to FAILED, close the dead socket, and stop the service. Every
+     * failure path goes through here so none of the four can be
+     * forgotten again. */
+    private fun failSession(error: String) {
+        if (_connection.value != ConnectionState.CONNECTED) return
+        _error.value = error
+        _connection.value = ConnectionState.FAILED
+        closeSocket()
+        stopSessionService()
+    }
+
+    /** Ping the PC and wait for its pong. A ping write that succeeds
+     * into a dead socket proves nothing, so the pong coming back is
+     * the proof. Returns false and fails the session when the socket
+     * is dead or the pong does not arrive in time. */
+    private suspend fun verifyAlive(timeoutMs: Long = 3000): Boolean {
+        if (_connection.value != ConnectionState.CONNECTED) return false
+        val before = _lastPongAt.value
+        try {
+            sendMutex.withLock {
+                val s = socket ?: return false
+                writeHeader(s.outputStream, JSONObject().put("type", "ping").toString().toByteArray())
+            }
+        } catch (_: Exception) {
+            failSession("Connection lost.")
+            return false
+        }
+        val ok = withTimeoutOrNull(timeoutMs) {
+            _lastPongAt.first { it > before }
+            true
+        } ?: false
+        if (!ok) failSession("Connection lost.")
+        return ok
+    }
+
+    /** Called when the app comes back to the foreground. If the session
+     * died while the app was away, rejoin the last peer on its own
+     * using the identity already in the Keystore. A deliberate
+     * disconnect clears the last host, so this never reconnects after
+     * the user chose to leave, and a Join that never connected never
+     * rejoins either. One attempt per return: if it fails, the error
+     * stays on Home for the user to act on. A rejoin of a Known peer
+     * still waits for the PC's approval tap; the waiting sheet shows
+     * as usual while it waits. */
+    suspend fun onReturnedToForeground() {
+        if (_connection.value == ConnectionState.CONNECTED) {
+            verifyAlive()
+        }
+        if (_connection.value == ConnectionState.FAILED) {
+            val host = lastConnectedHost ?: return
+            connect(host)
         }
     }
 
@@ -391,11 +491,7 @@ class SessionManager(private val context: Context) {
                     // nothing marked the session dead until the next send
                     // tried to write to it. Detect it here, within 10 s.
                     if (e is kotlinx.coroutines.CancellationException) break
-                    if (_connection.value == ConnectionState.CONNECTED) {
-                        _error.value = "Connection lost."
-                        _connection.value = ConnectionState.FAILED
-                        closeSocket()
-                    }
+                    failSession("Connection lost.")
                     break
                 }
             }
@@ -444,7 +540,7 @@ class SessionManager(private val context: Context) {
                                 writeHeader(session.socket.outputStream, JSONObject().put("type", "pong").toString().toByteArray())
                             }
                         }
-                        "pong" -> {}
+                        "pong" -> { _lastPongAt.value = System.currentTimeMillis() }
                         "bye" -> {
                             // The PC ended the session cleanly. This is a
                             // session error, not a join failure: close the
@@ -452,9 +548,7 @@ class SessionManager(private val context: Context) {
                             // interrupted state instead of staying on a dead
                             // Session. Never leave a dead socket behind for
                             // a later send to trip over with Broken pipe.
-                            closeSocket()
-                            _error.value = "The PC ended the session."
-                            _connection.value = ConnectionState.FAILED
+                            failSession("The PC ended the session.")
                             break
                         }
                         "error" -> {
@@ -476,14 +570,10 @@ class SessionManager(private val context: Context) {
                 if (e is kotlinx.coroutines.CancellationException) return@launch
                 pendingAck?.complete(null)
                 pendingAck = null
-                if (_connection.value == ConnectionState.CONNECTED) {
-                    _error.value = friendlyError(e)
-                    _connection.value = ConnectionState.FAILED
-                    // Drop the dead socket now. A later send must see
-                    // "not connected" instead of writing to a closed
-                    // socket and reporting a misleading Broken pipe.
-                    closeSocket()
-                }
+                // Drop the dead socket now. A later send must see
+                // "not connected" instead of writing to a closed
+                // socket and reporting a misleading Broken pipe.
+                failSession(friendlyError(e))
             }
         }
     }
@@ -616,6 +706,11 @@ class SessionManager(private val context: Context) {
         _transferError.value = null
         scope.launch {
             val s = socket ?: run { _transferError.value = "Not connected. Join the PC and try again."; return@launch }
+            // The session can have died since the last heartbeat (at most
+            // 10 s ago). Ping and wait for the pong before spooling a
+            // whole file into a send that would fail at the first write.
+            // verifyAlive already fails the session when it is dead.
+            if (!verifyAlive(2000)) return@launch
             val resolver = context.contentResolver
             var name = "file"
             resolver.query(uri, null, null, null, null)?.use { c ->
@@ -716,6 +811,9 @@ class SessionManager(private val context: Context) {
         _transferError.value = null
         scope.launch {
             val s = socket ?: run { _transferError.value = "Not connected. Join the PC and try again."; return@launch }
+            // Same pre-flight check as a send: do not ask for a file
+            // over a session that has already died.
+            if (!verifyAlive(2000)) return@launch
             val trimmed = name.trim()
             try {
                 sendMutex.withLock {

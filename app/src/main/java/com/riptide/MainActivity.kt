@@ -3,7 +3,6 @@ package com.riptide
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -33,7 +32,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.riptide.core.ConnectionState
 import com.riptide.core.SessionManager
-import com.riptide.service.TransferService
 import com.riptide.ui.approval.PeerApprovalSheet
 import com.riptide.ui.components.PhoneFingerprintSheet
 import com.riptide.ui.devices.DevicesScreen
@@ -50,6 +48,10 @@ import com.riptide.ui.settings.SettingsScreen
 import com.riptide.ui.settings.SettingsViewModel
 import com.riptide.ui.theme.RiptideColors
 import com.riptide.ui.theme.RiptideTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
@@ -64,12 +66,30 @@ class MainActivity : ComponentActivity() {
     private val pickFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) (application as RiptideApp).session.sendFile(uri)
     }
+    // Own scope for activity-lifecycle work (the onResume liveness
+    // check). No new dependency: lifecycleScope would need
+    // lifecycle-runtime-ktx, which is not declared.
+    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    override fun onResume() {
+        super.onResume()
+        // The app was in the background: the session may have died
+        // while it was away. Verify it is still alive, and rejoin the
+        // last peer on its own when it is not. The system file picker
+        // backgrounds the app the same way, so this also covers
+        // returning from picking a file.
+        activityScope.launch { (application as RiptideApp).session.onReturnedToForeground() }
+    }
+
+    override fun onDestroy() {
+        activityScope.cancel()
+        super.onDestroy()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as RiptideApp
         val session = app.session
-        startService(Intent(this, TransferService::class.java))
         setContent {
             RiptideTheme {
                 var currentTab by remember { mutableStateOf(RiptideTab.Transfer) }

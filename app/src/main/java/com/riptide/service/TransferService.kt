@@ -7,6 +7,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import com.riptide.MainActivity
 import com.riptide.RiptideApp
+import com.riptide.core.ConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,9 +28,13 @@ class TransferService : Service() {
             return START_NOT_STICKY
         }
         TransferNotificationHelper.createNotificationChannel(this)
+        // Held for the whole session, not just a transfer, and with no
+        // timeout: the service itself only runs while a session is
+        // connected, so its lifetime bounds the lock. onDestroy releases
+        // it, and the OS releases it if the process dies.
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "riptide:transfer").apply {
-            if (!isHeld) acquire(10 * 60 * 1000L)
+            if (!isHeld) acquire()
         }
         val session = (application as RiptideApp).session
         val contentIntent = PendingIntent.getActivity(
@@ -40,17 +45,41 @@ class TransferService : Service() {
             this, 1, Intent(this, TransferService::class.java).setAction(TransferNotificationHelper.ACTION_CANCEL),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        // Become a foreground service synchronously, before any async
+        // work: a service started with startForegroundService must call
+        // startForeground within 5 seconds or the system kills it. The
+        // collector below replaces this notification at once with the
+        // right one (transfer progress, or connected).
+        startForeground(
+            TransferNotificationHelper.NOTIFICATION_ID,
+            TransferNotificationHelper.buildConnectedNotification(
+                this, session.peerName.value.ifBlank { "PC" }, contentIntent, cancelIntent
+            )
+        )
         job?.cancel()
         job = scope.launch {
-            combine(session.active, session.peerName) { active, _ -> active }.collect { active ->
-                if (active == null) {
+            combine(session.connection, session.active, session.peerName) { connection, active, peer ->
+                Triple(connection, active, peer)
+            }.collect { (connection, active, peer) ->
+                // No session, no service. SessionManager also stops the
+                // service on disconnect and on every session failure;
+                // this is the second half of that pair, for the case
+                // where the connection drops without the manager
+                // noticing first.
+                if (connection != ConnectionState.CONNECTED) {
                     stopSelf()
                     return@collect
                 }
-                val notification = TransferNotificationHelper.buildTransferNotification(
-                    this@TransferService, active.filename, active.direction,
-                    (active.progress * 100).toInt(), active.speedFormatted, contentIntent, cancelIntent
-                )
+                val notification = if (active != null) {
+                    TransferNotificationHelper.buildTransferNotification(
+                        this@TransferService, active.filename, active.direction,
+                        (active.progress * 100).toInt(), active.speedFormatted, contentIntent, cancelIntent
+                    )
+                } else {
+                    TransferNotificationHelper.buildConnectedNotification(
+                        this@TransferService, peer.ifBlank { "PC" }, contentIntent, cancelIntent
+                    )
+                }
                 startForeground(TransferNotificationHelper.NOTIFICATION_ID, notification)
             }
         }
