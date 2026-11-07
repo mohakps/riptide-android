@@ -336,26 +336,37 @@ class SessionManager(private val context: Context) {
 
     /** Ping the PC and wait for its pong. A ping write that succeeds
      * into a dead socket proves nothing, so the pong coming back is
-     * the proof. Returns false and fails the session when the socket
-     * is dead or the pong does not arrive in time. */
-    private suspend fun verifyAlive(timeoutMs: Long = 3000): Boolean {
+     * the proof. Retries once before failing the session: a single
+     * slow or lost pong (the process just came back from the
+     * background, threads rescheduling, a network blip) must not kill
+     * a healthy session. The one-shot check is what used to
+     * disconnect a live session the moment the app was reopened.
+     * Returns false and fails the session only when no pong arrives
+     * on either attempt. */
+    private suspend fun verifyAlive(timeoutMs: Long = 3000, attempts: Int = 2): Boolean {
         if (_connection.value != ConnectionState.CONNECTED) return false
-        val before = _lastPongAt.value
-        try {
-            sendMutex.withLock {
-                val s = socket ?: return false
-                writeHeader(s.outputStream, JSONObject().put("type", "ping").toString().toByteArray())
+        repeat(attempts) {
+            val before = _lastPongAt.value
+            try {
+                sendMutex.withLock {
+                    val s = socket ?: return false
+                    writeHeader(s.outputStream, JSONObject().put("type", "ping").toString().toByteArray())
+                }
+            } catch (_: Exception) {
+                failSession("Connection lost.")
+                return false
             }
-        } catch (_: Exception) {
-            failSession("Connection lost.")
-            return false
+            val ok = withTimeoutOrNull(timeoutMs) {
+                _lastPongAt.first { it > before }
+                true
+            } ?: false
+            if (ok) return true
+            // No pong for this ping. A late pong still counts for the
+            // next attempt, since each attempt captures a fresh
+            // `before` above.
         }
-        val ok = withTimeoutOrNull(timeoutMs) {
-            _lastPongAt.first { it > before }
-            true
-        } ?: false
-        if (!ok) failSession("Connection lost.")
-        return ok
+        failSession("Connection lost.")
+        return false
     }
 
     /** Called when the app comes back to the foreground. If the session

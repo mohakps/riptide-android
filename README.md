@@ -2,6 +2,22 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.3.3: do not kill a live session on one slow pong
+
+- Returning to the foreground verifies the session with a ping and
+  waits for the pong. That check used to try once: a single slow or
+  lost pong (the process just came back from the background, threads
+  rescheduling, a network blip) failed the session and closed the
+  socket, so the PC showed disconnected the moment the app was
+  reopened. The check now retries once, with a fresh baseline each
+  time, and only fails the session when no pong arrives on either
+  attempt. A late pong still counts for the retry.
+- Note: when the session really is dead on return, the automatic
+  rejoin still cannot succeed until Create Server is started on the
+  PC again: the PC listener accepts one connection and then stops
+  listening, and nothing re-arms it after a session ends. That is a
+  PC-side fix, not an Android one.
+
 ## v0.3.2: Block trident launcher icon (design 27)
 
 - Launcher icon is now design 27, Block trident, from the enlarged /
@@ -196,6 +212,12 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.3.3 release APK
+
+- `app-release.apk`, 47 MB, versionCode 9, versionName 0.3.3, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `ca0418db2eefe6da35ae31b9dcd6a04942cbc0115ca34d770fb6c48aacedd904`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2, installs as an update).
 
 ## v0.3.2 release APK
 
