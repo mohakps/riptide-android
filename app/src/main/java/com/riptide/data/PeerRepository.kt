@@ -53,13 +53,22 @@ class PeerRepository(private val context: Context) {
         }
     }
 
-    /** Record a successful connection for ordering. Failed attempts never call this. */
-    fun markConnected(host: String) {
+    /** Record a successful connection for ordering, and correct the
+     * saved device name from the hello_ok reply. Failed attempts never
+     * call this. The name is only overwritten with a non-blank device
+     * name: dial saves a new peer as name = host before the hello
+     * exchange (the device name is not known yet), and this is what
+     * turns a row showing (ip, ip) into (device name, ip). Peers saved
+     * by older versions get fixed the same way, on their next
+     * successful connect. */
+    fun markConnected(host: String, deviceName: String? = null) {
         runBlocking {
             val list = loadPeers().toMutableList()
             val idx = list.indexOfFirst { it.host == host }
             if (idx >= 0) {
-                list[idx] = list[idx].copy(lastSuccessfulConnection = System.currentTimeMillis())
+                val current = list[idx]
+                val name = deviceName?.trim().orEmpty().ifBlank { current.name }
+                list[idx] = current.copy(name = name, lastSuccessfulConnection = System.currentTimeMillis())
                 persist(list)
             }
         }

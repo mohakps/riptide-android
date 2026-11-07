@@ -2,6 +2,18 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.3.1: saved peers show the device name
+
+- Recent devices (Transfer tab) and the Devices tab showed (ip, ip):
+  the row's first line is the saved peer name, and new peers were
+  saved with the name set to the host, because the PC's device name
+  is only known after the hello exchange. A successful connect now
+  corrects the saved name from the hello_ok reply, so rows show
+  (device name, ip/hostname). Peers saved by older versions are fixed
+  the same way, on their next successful connect.
+
+No APK built for 0.3.1 yet.
+
 ## v0.3: session history and label cleanup
 
 - The Session page's THIS SESSION list now starts empty on every

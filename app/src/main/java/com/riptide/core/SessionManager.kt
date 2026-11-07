@@ -245,7 +245,11 @@ class SessionManager(private val context: Context) {
                 // previous session's transfers. The durable received
                 // history (Received tab) is separate and untouched.
                 _history.value = emptyList()
-                peers.markConnected(host)
+                // The PC's device name arrives in hello_ok. Pass it so
+                // the saved peer shows (device name, ip) instead of
+                // (ip, ip): dial saved a new peer as name = host
+                // because the name was not known yet.
+                peers.markConnected(host, session.peerDevice)
                 _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
                 startSessionService()
                 startReader(session)
