@@ -5,12 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-
-private val Context.receiveDataStore by preferencesDataStore(name = "riptide")
 
 /** Where received files are saved. A null tree URI means the default,
  * Downloads/Riptide. A custom folder is a Storage Access Framework tree
@@ -29,7 +26,7 @@ class ReceiveFolderRepository(private val context: Context) {
 
     fun load(): ReceiveFolder {
         return runBlocking {
-            val prefs = context.receiveDataStore.data.first()
+            val prefs = context.riptideDataStore.data.first()
             val uri = prefs[uriKey]
             val name = prefs[nameKey]
             if (uri.isNullOrBlank()) {
@@ -42,7 +39,7 @@ class ReceiveFolderRepository(private val context: Context) {
 
     fun save(treeUri: String, displayName: String) {
         runBlocking {
-            context.receiveDataStore.edit {
+            context.riptideDataStore.edit {
                 it[uriKey] = treeUri
                 it[nameKey] = displayName.ifBlank { DEFAULT_DISPLAY_NAME }
             }
@@ -51,7 +48,7 @@ class ReceiveFolderRepository(private val context: Context) {
 
     fun clear() {
         runBlocking {
-            context.receiveDataStore.edit {
+            context.riptideDataStore.edit {
                 it.remove(uriKey)
                 it.remove(nameKey)
             }

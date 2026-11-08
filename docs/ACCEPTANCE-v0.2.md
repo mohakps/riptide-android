@@ -572,3 +572,24 @@ Fixes in v0.2.1 (versionCode 4):
   view, a rename, a folder pick and relaunch, a receive into the new
   folder, opening a prior Received item, and the share sheet from
   Share diagnostics log.
+## v0.5.1 addendum (launch crash fix, 2026-11-08)
+
+- v0.5 crashed on launch. Root cause: ReceiveFolderRepository
+  declared its own `preferencesDataStore(name = "riptide")` alongside
+  PeerRepository's. Each delegate creates its own DataStore for the
+  same file, and DataStore throws IllegalStateException ("multiple
+  DataStores active for the same file") when both are used. The
+  SessionManager constructed the ReceiveFolderRepository and called
+  load() (creating DataStore 1), then its init coroutine called
+  peers.loadPeers() (creating DataStore 2), so the app died during
+  startup. The fix is a single shared delegate
+  (`data/RiptideDataStore.kt`) that both repositories use. The
+  receive folder also no longer loads synchronously during
+  SessionManager construction; it starts at the default and loads in
+  the background init coroutine.
+- Build evidence: compile, 35/35 unit tests, assembleRelease —
+  BUILD SUCCESSFUL. Release APK 47 MB, versionCode 13, versionName
+  0.5.1, SHA-256
+  0e6d5430426493d81816bb047febc83e7b1ecb094938a6433cf91960df6c99d6, same
+  signing cert c7b64485 (installs as an update).
+- Live phone check is the user's step: the app launches.

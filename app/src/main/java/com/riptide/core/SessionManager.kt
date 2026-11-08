@@ -132,8 +132,11 @@ class SessionManager(private val context: Context) {
     /** Sorted by last successful connection, most recent first. */
     val savedPeers: StateFlow<List<SavedPeerRecord>> = _savedPeers.asStateFlow()
     /** Where received files are saved. Null tree URI means the default,
-     * Downloads/Riptide. */
-    private val _receiveFolder = MutableStateFlow(receiveFolderRepo.load())
+     * Downloads/Riptide. Starts at the default and loads the saved
+     * choice in the background, so construction never blocks on disk. */
+    private val _receiveFolder = MutableStateFlow(
+        ReceiveFolder(null, ReceiveFolderRepository.DEFAULT_DISPLAY_NAME)
+    )
     val receiveFolder: StateFlow<ReceiveFolder> = _receiveFolder.asStateFlow()
     /** A verified file waiting for the user to pick a folder after the
      * saved destination lost access. The part file is kept until the
@@ -176,6 +179,7 @@ class SessionManager(private val context: Context) {
         scope.launch {
             _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
             _receivedHistory.value = receivedHistoryRepo.load()
+            _receiveFolder.value = receiveFolderRepo.load()
         }
     }
 

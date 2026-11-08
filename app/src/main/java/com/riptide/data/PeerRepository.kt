@@ -4,13 +4,10 @@ import android.content.Context
 import android.os.Build
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
-
-private val Context.dataStore by preferencesDataStore(name = "riptide")
 
 data class SavedPeerRecord(
     val name: String,
@@ -27,19 +24,19 @@ class PeerRepository(private val context: Context) {
 
     fun deviceName(): String {
         return runBlocking {
-            context.dataStore.data.first()[deviceKey] ?: (Build.MODEL ?: "Android Phone")
+            context.riptideDataStore.data.first()[deviceKey] ?: (Build.MODEL ?: "Android Phone")
         }
     }
 
     fun setDeviceName(name: String) {
         runBlocking {
-            context.dataStore.edit { it[deviceKey] = name.trim() }
+            context.riptideDataStore.edit { it[deviceKey] = name.trim() }
         }
     }
 
     fun loadPeers(): List<SavedPeerRecord> {
         return runBlocking {
-            val raw = context.dataStore.data.first()[peersKey] ?: return@runBlocking emptyList()
+            val raw = context.riptideDataStore.data.first()[peersKey] ?: return@runBlocking emptyList()
             try {
                 val arr = JSONArray(raw)
                 List(arr.length()) { i ->
@@ -93,6 +90,6 @@ class PeerRepository(private val context: Context) {
     private suspend fun persist(list: List<SavedPeerRecord>) {
         val arr = JSONArray()
         list.forEach { arr.put(JSONObject().apply { put("name", it.name); put("host", it.host); put("fingerprint", it.fingerprint); put("lastSuccessfulConnection", it.lastSuccessfulConnection) }) }
-        context.dataStore.edit { it[peersKey] = arr.toString() }
+        context.riptideDataStore.edit { it[peersKey] = arr.toString() }
     }
 }

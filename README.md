@@ -2,6 +2,18 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.5.1: launch crash fix (duplicate DataStore)
+
+- v0.5 crashed on launch. Root cause: ReceiveFolderRepository
+  declared its own `preferencesDataStore(name = "riptide")` alongside
+  PeerRepository's. Each delegate creates its own DataStore for the
+  same file, and DataStore throws IllegalStateException ("multiple
+  DataStores active for the same file") when both are used. The fix
+  is a single shared delegate (`data/RiptideDataStore.kt`) that both
+  repositories use. The receive folder also no longer loads
+  synchronously during SessionManager construction; it starts at the
+  default and loads in the background.
+
 ## v0.5: Tier 2 phone disconnect fix, Session corrections, Settings
 
 - Tier 2 phone side of the disconnect fix: disconnect() is
@@ -306,6 +318,13 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.5.1 release APK
+
+- `app-release.apk`, 47 MB, versionCode 13, versionName 0.5.1, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `0e6d5430426493d81816bb047febc83e7b1ecb094938a6433cf91960df6c99d6`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2/v0.3.3/v0.3.4/v0.4/v0.5, installs as an update).
+- Fixes the v0.5 launch crash (duplicate DataStore).
 
 ## v0.5 release APK
 
