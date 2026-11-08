@@ -15,13 +15,24 @@ class FormatUtilsTest {
 
     @Test
     fun testFormatBytesPair() {
-        // Shared unit shown once.
-        assertEquals("423.8 / 504.9 MB", formatBytesPair(444_386_509L, 529_426_022L))
-        assertEquals("256 / 512 KB", formatBytesPair(256L * 1024, 512L * 1024))
-        assertEquals("0 / 0 B", formatBytesPair(0, 0))
-        // Different units keep their own.
-        assertEquals("512 KB / 2 MB", formatBytesPair(512L * 1024, 2L * 1024 * 1024))
-        assertEquals("128 B / 2 KB", formatBytesPair(128, 2L * 1024))
+        // Shared unit shown once, no spaces around the slash, a
+        // nonbreaking space before the unit.
+        assertEquals("423.8/504.9\u00A0MB", formatBytesPair(444_386_509L, 529_426_022L, java.util.Locale.US))
+        assertEquals("256/512\u00A0KB", formatBytesPair(256L * 1024, 512L * 1024, java.util.Locale.US))
+        assertEquals("0/0\u00A0B", formatBytesPair(0, 0, java.util.Locale.US))
+        // Shared unit based on the total, even when the amounts differ.
+        assertEquals("0.5/2\u00A0MB", formatBytesPair(512L * 1024, 2L * 1024 * 1024, java.util.Locale.US))
+        assertEquals("0.1/2\u00A0KB", formatBytesPair(128, 2L * 1024, java.util.Locale.US))
+        // A positive amount that would round to zero in the shared unit
+        // keeps its own unit instead.
+        assertEquals("500 B/2\u00A0MB", formatBytesPair(500, 2L * 1024 * 1024, java.util.Locale.US))
+        // Values at or above 1000 in the shared unit drop the decimal.
+        assertEquals(
+            "1536/2048\u00A0MB",
+            formatBytesPair(1610612736L, 2147483648L, java.util.Locale.US)
+        )
+        // The decimal separator follows the locale.
+        assertEquals("423,8/504,9\u00A0MB", formatBytesPair(444_386_509L, 529_426_022L, java.util.Locale.GERMANY))
     }
 
     @Test

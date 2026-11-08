@@ -27,17 +27,35 @@ private fun unitFor(bytes: Long): BytesUnit {
     }
 }
 
-/** Transferred / total with the unit shown once when both share it:
- * "423.8 / 504.9 MB". When they differ, each keeps its own unit:
- * "512 KB / 2 MB". */
-fun formatBytesPair(transferred: Long, total: Long): String {
-    val t = unitFor(total)
-    val f = unitFor(transferred)
-    return if (t == f) {
-        "${trimDecimal(transferred.toDouble() / t.divisor)} / ${trimDecimal(total.toDouble() / t.divisor)} ${t.suffix}"
-    } else {
-        "${formatBytes(transferred)} / ${formatBytes(total)}"
+/** Transferred / total, compact and on one line: "170.8/188.6 MB".
+ * The unit is shared (based on the total) and shown once, after a
+ * nonbreaking space so it never wraps away from its amount. Decimals
+ * use the device locale and are dropped when a value is whole, or
+ * when either value reaches 1000 in the shared unit. When a positive
+ * transferred amount would round to zero in the shared unit, each
+ * value keeps its own unit instead ("500 B/2 MB"). */
+fun formatBytesPair(transferred: Long, total: Long, locale: Locale = Locale.getDefault()): String {
+    val t = transferred.coerceAtLeast(0L)
+    val tot = total.coerceAtLeast(0L)
+    val unit = unitFor(tot)
+    val tInUnit = t.toDouble() / unit.divisor
+    if (t > 0 && tInUnit < 0.05) {
+        // A positive amount would render as zero in the shared unit.
+        return "${formatBytes(t)}/${formatValueInUnit(tot, unit, locale)}\u00A0${unit.suffix}"
     }
+    return "${formatValueInUnit(t, unit, locale)}/${formatValueInUnit(tot, unit, locale)}\u00A0${unit.suffix}"
+}
+
+/** One value in a unit: one decimal only when it matters, with the
+ * given locale's decimal separator. Whole values and values at or
+ * above 1000 in the unit drop the decimal. Bytes are whole numbers. */
+private fun formatValueInUnit(bytes: Long, unit: BytesUnit, locale: Locale): String {
+    val v = bytes.coerceAtLeast(0L).toDouble() / unit.divisor
+    if (unit.divisor == 1.0) return bytes.coerceAtLeast(0L).toString()
+    if (v >= 1000.0) return String.format(locale, "%.0f", v)
+    val one = String.format(locale, "%.1f", v)
+    val sep = java.text.DecimalFormatSymbols.getInstance(locale).decimalSeparator
+    return if (one.endsWith("${sep}0")) one.dropLast(2) else one
 }
 
 private fun trimDecimal(value: Double): String {

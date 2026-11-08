@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -25,14 +26,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -50,7 +48,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.R
-import com.riptide.ui.components.BottomInfoPanel
 import com.riptide.ui.model.DownloadState
 import com.riptide.ui.theme.MonospaceFontFamily
 import com.riptide.ui.theme.RiptideColors
@@ -60,7 +57,6 @@ import com.riptide.ui.theme.RiptideColors
  * 12 (download denied), 13 (interrupted). The Transfer tab shows this
  * screen while a session is live; it never resets to Home on return.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionScreen(
     viewModel: SessionViewModel,
@@ -76,11 +72,30 @@ fun SessionScreen(
     var showCancelConfirm by remember { mutableStateOf(false) }
     var showDisconnectConfirm by remember { mutableStateOf(false) }
     var overflowOpen by remember { mutableStateOf(false) }
+    // The same live state drives the app-bar status, the header and
+    // the body, so the status appears exactly once.
+    val connected = !uiState.showInterrupted
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
+            // A custom bar, not TopAppBar: the two-line title (Session
+            // plus the status dot and label) must let the bar grow at
+            // large font sizes instead of clipping in a fixed 64 dp.
+            Row(
+                modifier = Modifier.fillMaxWidth().statusBarsPadding()
+                    .heightIn(min = 64.dp).padding(horizontal = 4.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { showDisconnectConfirm = true }, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        painter = painterResource(R.drawable.riptide_back),
+                        contentDescription = "Back",
+                        modifier = Modifier.size(24.dp),
+                        tint = RiptideColors.OnSurface
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Session",
                         color = RiptideColors.OnSurface,
@@ -88,18 +103,22 @@ fun SessionScreen(
                         lineHeight = 32.sp,
                         fontWeight = FontWeight.Medium
                     )
-                },
-                navigationIcon = {
-                    IconButton(onClick = { showDisconnectConfirm = true }, modifier = Modifier.size(48.dp)) {
-                        Icon(
-                            painter = painterResource(R.drawable.riptide_back),
-                            contentDescription = "Back",
-                            modifier = Modifier.size(24.dp),
-                            tint = RiptideColors.OnSurface
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(6.dp)
+                                .background(if (connected) RiptideColors.Success else RiptideColors.Error, CircleShape)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = if (connected) "Connected" else "Disconnected",
+                            color = if (connected) RiptideColors.Success else RiptideColors.Error,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
                         )
                     }
-                },
-                actions = {
+                }
+                Box {
                     IconButton(onClick = { overflowOpen = true }, modifier = Modifier.size(48.dp)) {
                         Icon(
                             painter = painterResource(R.drawable.riptide_more),
@@ -114,9 +133,8 @@ fun SessionScreen(
                             onClick = { overflowOpen = false; showDisconnectConfirm = true }
                         )
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = RiptideColors.Background)
-            )
+                }
+            }
         },
         bottomBar = {
             // The action strip lives here only while connected. After a
@@ -166,14 +184,13 @@ fun SessionScreen(
             ) {
                 Spacer(modifier = Modifier.height(8.dp))
                 // Compact peer header. The Disconnect capsule is
-                // centered against the combined name/IP block, and the
-                // status line sits 8 dp below the header row, outside
-                // the alignment. On narrow screens or large text the
-                // whole button drops below the peer details, aligned
-                // end, so peer data is never overlapped or cut. The
-                // button only shows while connected.
+                // centered against the combined name/IP block. The
+                // status lives in the app bar now, not below the
+                // header. On narrow screens or large text the whole
+                // button drops below the peer details, aligned end,
+                // so peer data is never overlapped or cut. The button
+                // only shows while connected.
                 val peerName = uiState.peerName.ifBlank { uiState.peerHost.ifBlank { "Connected PC" } }
-                val connected = !uiState.showInterrupted
                 val fontScale = LocalDensity.current.fontScale
                 val stackHeader = narrow || fontScale >= 1.3f
                 if (stackHeader) {
@@ -197,9 +214,17 @@ fun SessionScreen(
                         }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                StatusRow(connected = connected)
-                Spacer(Modifier.height(8.dp))
+                // The ready and lost panels sit 32 dp below the peer
+                // row (16 dp of extra space); the active-transfer card
+                // keeps the normal 16 dp gap.
+                val topGap = when {
+                    uiState.showInterrupted -> 32.dp
+                    uiState.activeTransfer != null || uiState.busyPhase != null -> 16.dp
+                    uiState.downloadState is DownloadState.Denied -> 16.dp
+                    uiState.downloadState is DownloadState.Waiting -> 16.dp
+                    else -> 32.dp
+                }
+                Spacer(Modifier.height(topGap))
 
                 // One session state at a time, from the same state as
                 // the header. Disconnection takes precedence over any
@@ -331,12 +356,9 @@ fun SessionScreen(
                     }
                     Spacer(Modifier.height(20.dp))
                 }
+                // Session history (or its empty state) is the last body
+                // item now; the interrupted-transfer tip is gone.
                 SessionHistoryFeed(records = uiState.transferHistory, disconnected = uiState.showInterrupted)
-                // The tip is the last item of the scrolling body, not a
-                // fixed footer: 24 dp above, 24 dp trailing padding
-                // below, moving with the list.
-                Spacer(Modifier.height(24.dp))
-                BottomInfoPanel(message = "Interrupted transfers restart from the beginning.")
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -460,22 +482,6 @@ private fun PeerNameIp(peerName: String, peerHost: String, modifier: Modifier = 
             fontFamily = FontFamily.Monospace,
             fontSize = 15.sp,
             lineHeight = 22.sp
-        )
-    }
-}
-
-/** Connection dot and label, on its own line below the header row. */
-@Composable
-private fun StatusRow(connected: Boolean, modifier: Modifier = Modifier) {
-    val statusColor = if (connected) RiptideColors.Success else RiptideColors.Error
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
-        Box(modifier = Modifier.size(6.dp).background(statusColor, CircleShape))
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = if (connected) "Connected" else "Disconnected",
-            color = statusColor,
-            fontSize = 13.sp,
-            lineHeight = 18.sp
         )
     }
 }

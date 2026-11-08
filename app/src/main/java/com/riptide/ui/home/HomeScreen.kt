@@ -38,6 +38,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -71,6 +72,9 @@ fun HomeScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    // The hostname keyboard goes away on Join, before the approval
+    // sheet shows; the sheet hides it again as a safety net.
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     Scaffold(
         topBar = { RiptideTopBar(onOpenSettings = onNavigateToSettings) },
@@ -129,7 +133,7 @@ fun HomeScreen(
                         autoCorrectEnabled = false,
                         imeAction = ImeAction.Done
                     ),
-                    keyboardActions = KeyboardActions(onDone = { viewModel.onJoinClicked() }),
+                    keyboardActions = KeyboardActions(onDone = { keyboardController?.hide(); viewModel.onJoinClicked() }),
                     shape = RoundedCornerShape(16.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = RiptideColors.SurfaceRaised,
@@ -166,7 +170,7 @@ fun HomeScreen(
                     }
                 } else {
                     Button(
-                        onClick = viewModel::onJoinClicked,
+                        onClick = { keyboardController?.hide(); viewModel.onJoinClicked() },
                         enabled = uiState.hostInput.isNotBlank(),
                         modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                         shape = RoundedCornerShape(28.dp),

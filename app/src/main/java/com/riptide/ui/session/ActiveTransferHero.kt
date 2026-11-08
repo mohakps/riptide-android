@@ -2,6 +2,8 @@ package com.riptide.ui.session
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,13 +23,17 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.R
@@ -192,54 +198,77 @@ fun ActiveTransferHero(
                         )
                     }
                     Spacer(Modifier.height(12.dp))
-                    // Fixed two-column metrics: size LEFT, speed RIGHT.
-                    // Never one wrapping line; Cancel gets its own footer.
+                    // Measured metrics. The speed column is sized from
+                    // the expected formatted speed values and Transferred
+                    // gets the rest, with a 12 dp gap. At ordinary sizes
+                    // the pair fits on one line; when it will not fit at
+                    // the current font scale, the two metrics stack so
+                    // each gets the full card width. Wrapping stays on
+                    // as the final accessibility fallback.
                     val speedText = when {
                         busyPhase == BusyPhase.VERIFYING || busyPhase == BusyPhase.WAITING_ACK -> "—"
                         activeTransfer.speedFormatted.isBlank() || activeTransfer.speedFormatted == "0 B/s" -> "—"
                         else -> activeTransfer.speedFormatted
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Transferred",
-                                color = RiptideColors.OnSurfaceVariant,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                text = formatBytesPair(activeTransfer.transferredBytes, activeTransfer.totalBytes),
-                                color = RiptideColors.OnSurface,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 14.sp,
-                                lineHeight = 20.sp,
-                                modifier = Modifier.semantics {
-                                    contentDescription = "Transferred ${formatBytes(activeTransfer.transferredBytes)} of ${formatBytes(activeTransfer.totalBytes)}"
-                                }
+                    val pairText = formatBytesPair(activeTransfer.transferredBytes, activeTransfer.totalBytes)
+                    val transferredDescription =
+                        "Transferred ${formatBytes(activeTransfer.transferredBytes)} of ${formatBytes(activeTransfer.totalBytes)}"
+                    val speedDescription = if (speedText == "—") "Speed unavailable" else "Speed $speedText"
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        val density = LocalDensity.current
+                        val measurer = rememberTextMeasurer()
+                        val valueStyle = TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
+                        )
+                        // Reserve the widest expected speed so the column
+                        // never jumps as the value changes; grow it when
+                        // the actual value is wider.
+                        val speedWidthPx = remember(speedText, density) {
+                            maxOf(
+                                measurer.measure("999.9 MB/s", valueStyle).size.width,
+                                measurer.measure(speedText, valueStyle).size.width
                             )
                         }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Speed",
-                                color = RiptideColors.OnSurfaceVariant,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                text = speedText,
-                                color = RiptideColors.OnSurface,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 14.sp,
-                                lineHeight = 20.sp,
-                                modifier = Modifier.semantics {
-                                    contentDescription = if (speedText == "—") "Speed unavailable" else "Speed $speedText"
+                        val pairWidthPx = remember(pairText, density) {
+                            measurer.measure(pairText, valueStyle).size.width
+                        }
+                        val availablePx = with(density) { maxWidth.toPx() }.toInt()
+                        val gapPx = with(density) { 12.dp.toPx() }.toInt()
+                        val transferredPx = availablePx - speedWidthPx - gapPx
+                        if (pairWidthPx > transferredPx) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Metric(
+                                    label = "Transferred",
+                                    value = pairText,
+                                    contentDescription = transferredDescription
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Metric(
+                                    label = "Speed",
+                                    value = speedText,
+                                    contentDescription = speedDescription
+                                )
+                            }
+                        } else {
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                Box(modifier = Modifier.width(with(density) { transferredPx.toDp() })) {
+                                    Metric(
+                                        label = "Transferred",
+                                        value = pairText,
+                                        contentDescription = transferredDescription
+                                    )
                                 }
-                            )
+                                Spacer(Modifier.width(12.dp))
+                                Box(modifier = Modifier.width(with(density) { speedWidthPx.toDp() })) {
+                                    Metric(
+                                        label = "Speed",
+                                        value = speedText,
+                                        contentDescription = speedDescription
+                                    )
+                                }
+                            }
                         }
                     }
                     if (busyPhase == BusyPhase.VERIFYING) {
@@ -278,5 +307,35 @@ fun ActiveTransferHero(
                 }
             }
         }
+    }
+}
+
+/** One labeled metric: 12/16 label on top, 13/18 monospace value
+ * below, aligned by baseline with its sibling. The value wraps as a
+ * last resort at extreme text sizes; the full amounts stay available
+ * to accessibility services through the description. */
+@Composable
+private fun Metric(
+    label: String,
+    value: String,
+    contentDescription: String,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
+        Text(
+            text = label,
+            color = RiptideColors.OnSurfaceVariant,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = value,
+            color = RiptideColors.OnSurface,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            modifier = Modifier.semantics { this.contentDescription = contentDescription }
+        )
     }
 }

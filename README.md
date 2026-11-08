@@ -2,6 +2,42 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.6: verification sheet, transfer metrics, Session app bar, Settings rows, Tidecut Carve icon
+
+- First-connection sheet opens directly expanded (partial state skipped)
+  with a scrollable verification body and a fixed action area below it,
+  so Allow and Deny stay reachable while the body scrolls. The sheet
+  applies the navigation inset once, with 12 dp below the last button.
+  The hostname keyboard is dismissed on Join and again when the sheet
+  shows. On a very short window the same content appears in a
+  full-height modal with the two actions side by side. The waiting-host
+  sheet uses the same layout, so its cancel action stays reachable.
+- Transfer metrics: the speed column is measured from the expected
+  formatted values and Transferred gets the rest with a 12 dp gap.
+  The size value is 13/18 sp monospace in compact form ("170.8/188.6
+  MB", shared unit from the total, nonbreaking space before the unit,
+  localized decimal separator, mixed units when a positive amount
+  would round to zero). When the pair will not fit at the current
+  font scale the two metrics stack, each full width. Full amounts stay
+  in the accessibility descriptions.
+- Session: the status dot and label moved into the app bar title slot
+  (Session above, 6 dp dot + 12/16 sp label below), and the bar is a
+  custom Row so it grows at large font sizes. The duplicate status
+  below the peer address is gone. The ready and lost panels sit 32 dp
+  below the peer row; the active-transfer card keeps the 16 dp gap.
+  The "Interrupted transfers restart from the beginning." tip is gone
+  from Session in every state; history is the last body item.
+- Settings: one 56 dp action-row layout for View full fingerprint
+  (new outlined eye icon), Reset identity, GitHub repository and Share
+  diagnostics log. The eye and reset icons share a 20 dp box and 12 dp
+  label gap with 16 dp card-side insets; inset dividers sit above the
+  fingerprint row and between the two Identity actions; the final row
+  of each card ends flush with the card bottom.
+- Launcher icon is Tidecut Carve: the supplied background, foreground
+  and monochrome layers plus the v26/v33 regular and round adaptive
+  definitions, replacing the trident. Manifest entries unchanged. The
+  old trident layers are deleted.
+
 ## v0.5.1: launch crash fix (duplicate DataStore)
 
 - v0.5 crashed on launch. Root cause: ReceiveFolderRepository
@@ -318,6 +354,13 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.6 release APK
+
+- `app-release.apk`, 47 MB, versionCode 14, versionName 0.6, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `347f057c929b217b9d45ee4ff54fe295f91d190c6ba352893b7d4d959c80a69c`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2/v0.3.3/v0.3.4/v0.4/v0.5/v0.5.1, installs as an update).
+- Verification sheet, transfer metrics, Session app bar, Settings rows, Tidecut Carve launcher icon.
 
 ## v0.5.1 release APK
 

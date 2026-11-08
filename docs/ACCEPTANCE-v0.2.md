@@ -593,3 +593,45 @@ Fixes in v0.2.1 (versionCode 4):
   0e6d5430426493d81816bb047febc83e7b1ecb094938a6433cf91960df6c99d6, same
   signing cert c7b64485 (installs as an update).
 - Live phone check is the user's step: the app launches.
+## v0.6 addendum (verification sheet, metrics, Session app bar, Settings rows, Tidecut Carve icon, 2026-11-08)
+
+- First-connection sheet: opens directly expanded (skipPartiallyExpanded),
+  scrollable verification body, fixed action area below it with 8 dp
+  between buttons and 12 dp below the last button inside the safe area.
+  The sheet applies the navigation inset once (its default safeDrawing
+  bottom inset). The hostname keyboard is dismissed on Join and again
+  when the sheet shows. On a very short window (screen height under
+  480 dp) the same content appears in a full-height modal with the two
+  actions side by side. The waiting-host sheet uses the same layout.
+- Transfer metrics: speed column measured from the expected formatted
+  values (widest sample "999.9 MB/s" plus the actual value), Transferred
+  gets the rest with a 12 dp gap, 13/18 sp monospace, compact pair
+  "170.8/188.6 MB" (shared unit from the total, nonbreaking space before
+  the unit, localized decimal separator, mixed units when a positive
+  amount would round to zero). The pair stacks when it will not fit at
+  the current font scale; full amounts stay in the accessibility
+  descriptions. Unit tests cover the compact form, the mixed-unit
+  fallback, the >=1000 decimal drop and the localized separator.
+- Session: status dot and label in the app bar title slot (6 dp dot,
+  12/16 sp label, 6 dp gap), custom Row bar so it grows at large font
+  sizes. The duplicate status below the peer address is gone. Ready and
+  lost panels sit 32 dp below the peer row; the active-transfer card
+  keeps the 16 dp gap. The interrupted-transfer tip is gone from Session
+  in every state; history is the last body item.
+- Settings: one 56 dp action-row layout for View full fingerprint (new
+  outlined eye icon, verified by rendering), Reset identity, GitHub
+  repository and Share diagnostics log. Eye and reset icons share a
+  20 dp box and 12 dp label gap with 16 dp card-side insets; inset
+  dividers above the fingerprint row and between the two Identity
+  actions; the final row of each card ends flush with the card bottom.
+- Launcher icon: Tidecut Carve. The seven supplied XML files are
+  installed (background, foreground, monochrome layers; v26 and v33
+  regular and round definitions), replacing the trident; the manifest
+  entries were already correct. The old trident layers are deleted.
+  The artwork was rendered from the supplied SVG and matches the
+  preview's refined side: R in front of the T, both opposing waves,
+  coral reaching the edges.
+- Live phone checks are the user's step: the five acceptance items in
+  the v0.6 brief (sheet with both navigation modes and short/large
+  text, metrics at 320/360/412 dp and enlarged text, Session states,
+  Settings rows, Carve icon under circle/squircle/themed masks).

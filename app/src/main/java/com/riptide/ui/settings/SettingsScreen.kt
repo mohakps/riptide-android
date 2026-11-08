@@ -3,6 +3,7 @@ package com.riptide.ui.settings
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,7 +31,6 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -41,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -235,8 +236,11 @@ fun SettingsScreen(
                     shadowElevation = 0.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.Top) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp)
+                        ) {
                             Icon(
                                 painter = painterResource(R.drawable.riptide_shield),
                                 contentDescription = null,
@@ -262,58 +266,71 @@ fun SettingsScreen(
                                     fontSize = 29.sp,
                                     lineHeight = 36.sp
                                 )
-                                TextButton(
-                                    onClick = onShowFingerprint,
-                                    modifier = Modifier.heightIn(min = 48.dp)
-                                ) {
-                                    Text("View full fingerprint", color = RiptideColors.OnSurface, fontSize = 14.sp)
-                                }
                             }
                         }
-                        HorizontalDivider(color = RiptideColors.SurfaceVariant, thickness = 1.dp)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 56.dp)
-                                .clickable(enabled = canReset) { showResetConfirm = true }
-                                .semantics {
-                                    contentDescription = "Reset identity"
-                                    role = Role.Button
+                        Spacer(Modifier.height(16.dp))
+                        HorizontalDivider(
+                            color = RiptideColors.SurfaceVariant,
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        SettingsActionRow(
+                            label = "View full fingerprint",
+                            labelColor = RiptideColors.OnSurface,
+                            onClick = onShowFingerprint,
+                            contentDescription = "View full fingerprint",
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.riptide_eye),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = RiptideColors.OnSurfaceVariant
+                                )
+                            }
+                        )
+                        HorizontalDivider(
+                            color = RiptideColors.SurfaceVariant,
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        SettingsActionRow(
+                            label = "Reset identity",
+                            labelColor = if (canReset) RiptideColors.Error else RiptideColors.OnSurfaceVariant,
+                            onClick = { showResetConfirm = true },
+                            contentDescription = "Reset identity",
+                            enabled = canReset,
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.riptide_reset),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = if (canReset) RiptideColors.Error else RiptideColors.OnSurfaceVariant
+                                )
+                            }
+                        )
+                        if (!canReset || resetError != null) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth()
+                                    .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
+                            ) {
+                                if (!canReset) {
+                                    Text(
+                                        text = "Disconnect before resetting your identity.",
+                                        color = RiptideColors.OnSurfaceVariant,
+                                        fontSize = 13.sp,
+                                        lineHeight = 20.sp
+                                    )
                                 }
-                                .padding(vertical = 4.dp)
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.riptide_reset),
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = if (canReset) RiptideColors.Error else RiptideColors.OnSurfaceVariant
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                text = "Reset identity",
-                                color = if (canReset) RiptideColors.Error else RiptideColors.OnSurfaceVariant,
-                                fontSize = 16.sp,
-                                lineHeight = 22.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                        if (!canReset) {
-                            Text(
-                                text = "Disconnect before resetting your identity.",
-                                color = RiptideColors.OnSurfaceVariant,
-                                fontSize = 13.sp,
-                                lineHeight = 20.sp
-                            )
-                        }
-                        resetError?.let { err ->
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = err,
-                                color = RiptideColors.Error,
-                                fontSize = 13.sp,
-                                lineHeight = 20.sp
-                            )
+                                if (!canReset && resetError != null) Spacer(Modifier.height(8.dp))
+                                resetError?.let { err ->
+                                    Text(
+                                        text = err,
+                                        color = RiptideColors.Error,
+                                        fontSize = 13.sp,
+                                        lineHeight = 20.sp
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -327,63 +344,59 @@ fun SettingsScreen(
                     shadowElevation = 0.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "Riptide for Android",
+                                    color = RiptideColors.OnSurface,
+                                    fontSize = 16.sp,
+                                    lineHeight = 22.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "v$versionName",
+                                    color = RiptideColors.OnSurfaceVariant,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 14.sp,
+                                    lineHeight = 20.sp
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "Riptide for Android",
-                                color = RiptideColors.OnSurface,
-                                fontSize = 16.sp,
-                                lineHeight = 22.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = "v$versionName",
+                                text = "Direct, encrypted file transfer.",
                                 color = RiptideColors.OnSurfaceVariant,
-                                fontFamily = FontFamily.Monospace,
                                 fontSize = 14.sp,
                                 lineHeight = 20.sp
                             )
                         }
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = "Direct, encrypted file transfer.",
-                            color = RiptideColors.OnSurfaceVariant,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp
-                        )
                         Spacer(Modifier.height(16.dp))
-                        HorizontalDivider(color = RiptideColors.SurfaceVariant, thickness = 1.dp)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 56.dp)
-                                .clickable {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mohakps/riptide-android"))
-                                    context.startActivity(intent)
-                                }
-                                .semantics { contentDescription = "GitHub repository"; role = Role.Button }
-                                .padding(vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = "GitHub repository",
-                                color = RiptideColors.OnSurface,
-                                fontSize = 16.sp,
-                                lineHeight = 22.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Icon(
-                                painter = painterResource(R.drawable.riptide_external),
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = RiptideColors.OnSurfaceVariant
-                            )
-                        }
+                        HorizontalDivider(
+                            color = RiptideColors.SurfaceVariant,
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        SettingsActionRow(
+                            label = "GitHub repository",
+                            labelColor = RiptideColors.OnSurface,
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mohakps/riptide-android"))
+                                context.startActivity(intent)
+                            },
+                            contentDescription = "GitHub repository",
+                            trailingIcon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.riptide_external),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = RiptideColors.OnSurfaceVariant
+                                )
+                            }
+                        )
                     }
                 }
                 Spacer(modifier = Modifier.height(24.dp))
@@ -396,39 +409,34 @@ fun SettingsScreen(
                     shadowElevation = 0.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             text = "Connection events and session errors for troubleshooting.",
                             color = RiptideColors.OnSurfaceVariant,
                             fontSize = 14.sp,
-                            lineHeight = 20.sp
+                            lineHeight = 20.sp,
+                            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp)
                         )
                         Spacer(Modifier.height(16.dp))
-                        HorizontalDivider(color = RiptideColors.SurfaceVariant, thickness = 1.dp)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 56.dp)
-                                .clickable { onShareDiagnostics() }
-                                .semantics { contentDescription = "Share diagnostics log"; role = Role.Button }
-                                .padding(vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = "Share diagnostics log",
-                                color = RiptideColors.OnSurface,
-                                fontSize = 16.sp,
-                                lineHeight = 22.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Icon(
-                                painter = painterResource(R.drawable.riptide_share),
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = RiptideColors.OnSurfaceVariant
-                            )
-                        }
+                        HorizontalDivider(
+                            color = RiptideColors.SurfaceVariant,
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        SettingsActionRow(
+                            label = "Share diagnostics log",
+                            labelColor = RiptideColors.OnSurface,
+                            onClick = onShareDiagnostics,
+                            contentDescription = "Share diagnostics log",
+                            trailingIcon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.riptide_share),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = RiptideColors.OnSurfaceVariant
+                                )
+                            }
+                        )
                     }
                 }
                 Spacer(modifier = Modifier.height(24.dp))
@@ -551,4 +559,55 @@ private fun SectionLabel(text: String) {
         letterSpacing = 1.3.sp,
         fontWeight = FontWeight.Medium
     )
+}
+
+/** One 56 dp action row, shared by View full fingerprint, Reset
+ * identity, GitHub repository and Share diagnostics log. The leading
+ * icon sits in a 20 dp box, 12 dp from the label; the row is inset
+ * 16 dp from the card sides. At standard font scale the row is 56 dp
+ * high with a centered label and icon; it grows symmetrically for
+ * larger text. When it is the last child of a card it ends flush with
+ * the card bottom, and the row's own vertical padding supplies the
+ * breathing room. */
+@Composable
+private fun SettingsActionRow(
+    label: String,
+    labelColor: Color,
+    onClick: () -> Unit,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    leadingIcon: @Composable (() -> Unit)? = null,
+    trailingIcon: @Composable (() -> Unit)? = null
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics { this.contentDescription = contentDescription; role = Role.Button }
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        if (leadingIcon != null) {
+            Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                leadingIcon()
+            }
+            Spacer(Modifier.width(12.dp))
+        }
+        Text(
+            text = label,
+            color = labelColor,
+            fontSize = 16.sp,
+            lineHeight = 22.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
+        if (trailingIcon != null) {
+            Spacer(Modifier.width(16.dp))
+            Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                trailingIcon()
+            }
+        }
+    }
 }
