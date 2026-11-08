@@ -699,3 +699,28 @@ Fixes in v0.2.1 (versionCode 4):
   slow startup / unknown size / zero-byte / verification / cancel and
   disconnect, single-file ETA at 320/360/412 dp and enlarged text,
   blank Join PC with empty and spaces-only input).
+
+## v0.7.1 addendum (active-row fill fix, 2026-11-09)
+
+- Live test of v0.7 (screenshot, 5-video batch, 1.1/1.2 GB, 3s
+  remaining) showed the active row with no fill at all: pixel
+  analysis of the screenshot found zero #563438 pixels in the whole
+  image while the #352628 base was present. The overall bar and the
+  ETA were live, so the batch progress data was fine; the fill Box
+  itself never drew. Cause: the fill Box used fillMaxHeight()
+  directly, but the panel sits in a vertically scrollable column, so
+  the height constraint is unbounded and an empty Box with
+  fillMaxHeight() measures 0 tall. Fix: the fill is now wrapped in a
+  Box with matchParentSize(), which sizes it to the row's real height
+  (fixed by the content Row), and the fill then fills that height by
+  the file's own progress. The overall bar was unaffected because
+  LinearProgressIndicator has an explicit height(8.dp).
+- Build evidence: compile, 42/42 unit tests, lint 0 errors 20
+  warnings, assembleRelease — BUILD SUCCESSFUL. Release APK 47 MB,
+  versionCode 16, versionName 0.7.1, SHA-256
+  0307fe611512a0fea140ae98f82ef41ddeaf603a69acef19c7a9d873e470faa8, same
+  signing cert c7b64485 (installs as an update).
+- Live phone check is the user's step: send a batch of two or more
+  files, expand details mid-batch, and confirm the active row fills
+  with #563438 from the leading edge in proportion to that file's
+  bytes while the other rows stay unfilled.

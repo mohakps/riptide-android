@@ -351,12 +351,21 @@ private fun BatchFileRow(
                     contentDescription = "${item.name}, $status"
                 }
         ) {
+            // The fill must not use fillMaxHeight() directly: this
+            // panel sits in a vertically scrollable column, so the
+            // height constraint is unbounded, and an empty Box with
+            // fillMaxHeight() measures 0 tall and draws nothing (the
+            // v0.7 live test showed zero fill pixels). matchParentSize
+            // sizes this wrapper to the row's real height, which the
+            // content Row fixes, and the fill then fills that height.
             if (fillFraction != null) {
-                Box(
-                    modifier = Modifier.fillMaxHeight()
-                        .fillMaxWidth(animatedFill)
-                        .background(RiptideColors.BatchRowFill)
-                )
+                Box(modifier = Modifier.matchParentSize()) {
+                    Box(
+                        modifier = Modifier.fillMaxHeight()
+                            .fillMaxWidth(animatedFill)
+                            .background(RiptideColors.BatchRowFill)
+                    )
+                }
             }
             Row(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp),

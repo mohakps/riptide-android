@@ -2,6 +2,18 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.7.1: active-row fill fix
+
+- The active file row in the expanded batch details now actually
+  fills. In v0.7 the fill Box used fillMaxHeight() directly, but the
+  panel sits in a vertically scrollable column, so the height
+  constraint is unbounded and an empty Box with fillMaxHeight()
+  measures 0 tall and draws nothing; the v0.7 live test showed zero
+  fill pixels while the row itself rendered. The fill is now wrapped
+  in a Box with matchParentSize(), which sizes it to the row's real
+  height (fixed by the content Row), and the fill then fills that
+  height by the file's own progress. No other behaviour changed.
+
 ## v0.7: batch send, transfer ETA, Join PC validation
 
 - Batch send: Send file opens the native picker with multiple
@@ -400,6 +412,13 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.7.1 release APK
+
+- `app-release.apk`, 47 MB, versionCode 16, versionName 0.7.1, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `0307fe611512a0fea140ae98f82ef41ddeaf603a69acef19c7a9d873e470faa8`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2/v0.3.3/v0.3.4/v0.4/v0.5/v0.5.1/v0.6/v0.7, installs as an update).
+- Active-row fill fix only.
 
 ## v0.7 release APK
 
