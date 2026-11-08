@@ -30,4 +30,10 @@ object RiptideColors {
     val Error = Color(0xFFFF6B6B)
     val CodeContainer = Color(0xFFF2F0EB)
     val OnCodeContainer = Color(0xFF101010)
+    /** Batch panel: the tonal inset behind the active filename. */
+    val BatchInset = Color(0xFF272525)
+    /** Batch file list: the active row's base, and the fill that
+     * advances across it with that file's bytes. */
+    val BatchRowBase = Color(0xFF352628)
+    val BatchRowFill = Color(0xFF563438)
 }

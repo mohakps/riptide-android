@@ -43,6 +43,8 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
             viewModelScope.launch { s.transferError.collect { e -> _uiState.update { it.copy(sessionError = e) } } }
             viewModelScope.launch { s.receiveFolder.collect { f -> _uiState.update { it.copy(receiveFolderName = f.displayName) } } }
             viewModelScope.launch { s.pendingReceive.collect { p -> _uiState.update { it.copy(pendingReceive = p) } } }
+            viewModelScope.launch { s.batch.collect { b -> _uiState.update { recompute(it.copy(batchState = b)) } } }
+            viewModelScope.launch { s.batchMessage.collect { m -> _uiState.update { it.copy(batchMessage = m) } } }
             viewModelScope.launch {
                 s.connection.collect { c ->
                     val connected = c == ConnectionState.CONNECTED
@@ -79,6 +81,7 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
         val canStart = state.isConnected &&
             state.activeTransfer == null &&
             state.busyPhase == null &&
+            state.batchState == null &&
             state.downloadState !is DownloadState.Waiting
         return state.copy(canStartTransfer = canStart)
     }
@@ -97,6 +100,10 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
 
     fun setBusyPhase(phase: BusyPhase?) {
         _uiState.update { recompute(it.copy(busyPhase = phase)) }
+    }
+
+    fun setBatchState(batch: com.riptide.ui.model.BatchState?) {
+        _uiState.update { recompute(it.copy(batchState = batch)) }
     }
 
     fun setConnected(connected: Boolean) {
@@ -124,6 +131,14 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
 
     fun onCancelTransfer() {
         session?.disconnect()
+    }
+
+    fun onCancelBatch() {
+        session?.cancelBatch()
+    }
+
+    fun clearBatchMessage() {
+        session?.clearBatchMessage()
     }
 
     fun requestDownload(name: String) {

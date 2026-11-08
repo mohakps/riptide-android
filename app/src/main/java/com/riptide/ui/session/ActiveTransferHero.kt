@@ -291,10 +291,32 @@ fun ActiveTransferHero(
                         )
                     }
                     Spacer(Modifier.height(16.dp))
+                    // Time remaining, next to Cancel. Left-aligned with
+                    // Transferred, vertically centered against Cancel.
+                    // The text wraps and the row grows at narrow widths
+                    // and large fonts instead of clipping, ellipsizing,
+                    // or shrinking; Cancel stays end-aligned and
+                    // reachable. While verifying or waiting for the PC
+                    // the phase line above carries the state instead.
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        if (busyPhase != BusyPhase.VERIFYING && busyPhase != BusyPhase.WAITING_ACK) {
+                            Text(
+                                text = activeTransfer.etaFormatted ?: "Estimating time…",
+                                color = RiptideColors.OnSurfaceVariant,
+                                style = TextStyle(
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    fontFeatureSettings = "tnum"
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
                         Button(
                             onClick = onCancel,
                             shape = RoundedCornerShape(28.dp),

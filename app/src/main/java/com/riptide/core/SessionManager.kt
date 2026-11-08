@@ -18,6 +18,10 @@ import com.riptide.service.TransferService
 import com.riptide.ui.model.ActiveTransfer
 import com.riptide.ui.model.ApprovalPhase
 import com.riptide.ui.model.ApprovalRequest
+import com.riptide.ui.model.BatchItem
+import com.riptide.ui.model.BatchItemPhase
+import com.riptide.ui.model.BatchOutcome
+import com.riptide.ui.model.BatchState
 import com.riptide.ui.model.BusyPhase
 import com.riptide.ui.model.DownloadState
 import com.riptide.ui.model.ReceivedFileRecord
@@ -28,6 +32,7 @@ import com.riptide.ui.model.TrustStatus
 import com.riptide.util.basenameOnly
 import com.riptide.util.certFingerprint
 import com.riptide.util.derive6DigitCode
+import com.riptide.util.formatRemainingTime
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -114,6 +119,15 @@ class SessionManager(private val context: Context) {
     /** Non-null while preparing, verifying or waiting for a send ack. Blocks a second transfer. */
     private val _busyPhase = MutableStateFlow<BusyPhase?>(null)
     val busyPhase: StateFlow<BusyPhase?> = _busyPhase.asStateFlow()
+    /** The running outgoing batch, or null when no batch is active. A
+     * single send leaves this null and uses [_active]/[_busyPhase]
+     * only; a batch holds the slot through every file. */
+    private val _batch = MutableStateFlow<BatchState?>(null)
+    val batch: StateFlow<BatchState?> = _batch.asStateFlow()
+    /** Outcome of the last finished batch ("Batch sent · 5 files"),
+     * cleared when a new transfer starts. */
+    private val _batchMessage = MutableStateFlow<String?>(null)
+    val batchMessage: StateFlow<String?> = _batchMessage.asStateFlow()
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
     private val _history = MutableStateFlow<List<TransferRecord>>(emptyList())
@@ -152,6 +166,10 @@ class SessionManager(private val context: Context) {
     /** Incremented on every cancel; a dial that finishes after its generation
      * changed is stale and must not open a session. */
     @Volatile private var attemptGeneration = 0
+    /** Incremented when a batch is cancelled: the runner checks it
+     * before starting the next file, so a late acknowledgement can
+     * never start a queued file after the user cancelled. */
+    @Volatile private var batchGeneration = 0
     /** Monotonic generation for connection attempts. disconnect() captures
      * it so a late cleanup never clobbers a session that started after
      * the disconnect was tapped. */
@@ -174,7 +192,6 @@ class SessionManager(private val context: Context) {
     @Volatile private var pendingAck: CompletableDeferred<AckResult?>? = null
 
     init {
-        DiagLog.init(context)
         DiagLog.log("session", "SessionManager created")
         scope.launch {
             _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
@@ -293,6 +310,8 @@ class SessionManager(private val context: Context) {
 
     fun clearError() { _error.value = null; _transferError.value = null }
 
+    fun clearBatchMessage() { _batchMessage.value = null }
+
     fun clearDownloadDenied() {
         if (_downloadState.value is DownloadState.Denied) _downloadState.value = DownloadState.Idle
     }
@@ -365,6 +384,7 @@ class SessionManager(private val context: Context) {
                 // previous session's transfers. The durable received
                 // history (Received tab) is separate and untouched.
                 _history.value = emptyList()
+                _batchMessage.value = null
                 // The PC's device name arrives in hello_ok. Pass it so
                 // the saved peer shows (device name, ip) instead of
                 // (ip, ip): dial saved a new peer as name = host
@@ -403,6 +423,9 @@ class SessionManager(private val context: Context) {
     fun disconnect() {
         DiagLog.log("session", "disconnect (user)")
         attemptGeneration++
+        // A disconnect ends any running batch too: a late
+        // acknowledgement must never start the next queued file.
+        batchGeneration++
         connectJob?.cancel()
         connectJob = null
         lastConnectedHost = null
@@ -438,6 +461,7 @@ class SessionManager(private val context: Context) {
                 _downloadState.value = DownloadState.Idle
                 _connection.value = ConnectionState.IDLE
                 _active.value = null
+                _batch.value = null
             }
         }
     }
@@ -833,13 +857,12 @@ class SessionManager(private val context: Context) {
                         lastReport = now
                         val elapsed = ((now - start) / 1000.0).coerceAtLeast(0.1)
                         val speed = received / elapsed
-                        _active.value = ActiveTransfer(name, TransferDirection.RECEIVE, size, received, formatSpeed(speed), if (size > 0) received.toFloat() / size else 0f, formatEta(speed, size - received))
+                        _active.value = ActiveTransfer(name, TransferDirection.RECEIVE, size, received, formatSpeed(speed), if (size > 0) received.toFloat() / size else 0f, formatRemainingTime(size - received, speed))
                     }
                 }
             }
         } catch (e: Exception) {
-            _active.value = null
-            _busyPhase.value = null
+            clearActiveIfNoBatch()
             addHistory(name, name, false, received, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
             _transferError.value = "receive failed: ${e.message}"
             return
@@ -848,8 +871,7 @@ class SessionManager(private val context: Context) {
         _busyPhase.value = BusyPhase.VERIFYING
         val ok = digest.digest().joinToString("") { "%02x".format(it) } == expected.lowercase()
         if (!ok) {
-            _active.value = null
-            _busyPhase.value = null
+            clearActiveIfNoBatch()
             addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
             sendAck(session, name, false, "SHA-256 mismatch")
             return
@@ -857,8 +879,7 @@ class SessionManager(private val context: Context) {
         val saved = saveReceived(part, name)
         when (saved) {
             is SaveResult.Saved -> {
-                _active.value = null
-                _busyPhase.value = null
+                clearActiveIfNoBatch()
                 addHistory(name, saved.name, saved.name != name, size, TransferDirection.RECEIVE, TransferStatus.SUCCESS, true)
                 // Durable received history: only after verification AND saving succeed.
                 val record = ReceivedFileRecord(
@@ -875,15 +896,13 @@ class SessionManager(private val context: Context) {
                 // choice. No ack and no history yet; the recovery dialog
                 // resolves it.
                 _pendingReceive.value = PendingReceive(part, name, size, session)
-                _active.value = null
-                _busyPhase.value = null
+                clearActiveIfNoBatch()
                 DiagLog.log("session", "receive folder lost access, waiting for user choice: $name")
             }
             is SaveResult.Failed -> {
                 // Verification passed but saving failed: this is not a success,
                 // and it must not enter received history.
-                _active.value = null
-                _busyPhase.value = null
+                clearActiveIfNoBatch()
                 addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
                 _transferError.value = "Could not save $name to ${_receiveFolder.value.displayName}"
                 sendAck(session, name, false, "save failed")
@@ -993,8 +1012,43 @@ class SessionManager(private val context: Context) {
         }
     }
 
+    /** Outcome of one awaitable file send. */
+    sealed interface SendOutcome {
+        data class Sent(val savedName: String, val size: Long) : SendOutcome
+        data class NotSent(val reason: String) : SendOutcome
+    }
+
+    /** Display name of a content URI, from the provider. */
+    private fun resolveUriName(uri: Uri): String {
+        var name = "file"
+        try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (ni >= 0) name = c.getString(ni) ?: name
+                }
+            }
+        } catch (_: Exception) {}
+        return basenameOnly(name)
+    }
+
+    /** Provider-reported size, or null when the provider reports
+     * nothing usable (0 or absent). A zero-byte file and an unknown
+     * size both read as 0 here; the spool gives the exact size, so
+     * this only ever informs the display. */
+    private fun resolveUriSize(uri: Uri): Long? {
+        return try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val si = c.getColumnIndex(OpenableColumns.SIZE)
+                    if (si >= 0) c.getLong(si).takeIf { it > 0 } else null
+                } else null
+            }
+        } catch (_: Exception) { null }
+    }
+
     fun sendFile(uri: Uri) {
-        if (_active.value != null || _busyPhase.value != null) {
+        if (_active.value != null || _busyPhase.value != null || _batch.value != null) {
             _transferError.value = "A transfer is already in progress"
             return
         }
@@ -1007,102 +1061,301 @@ class SessionManager(private val context: Context) {
             return
         }
         _transferError.value = null
+        _batchMessage.value = null
         scope.launch {
-            val s = socket ?: run { _transferError.value = "Not connected. Join the PC and try again."; return@launch }
+            sendSingleFile(uri, isBatch = false, preflight = true)
+        }
+    }
+
+    /** One awaitable file send: spool, hash, write, wait for the PC's
+     * ack. The caller holds the transfer slot (no guard here). When
+     * [isBatch] is false this clears the active transfer when the file
+     * finishes, as a single send always did; when true it leaves the
+     * active transfer in place so the batch panel stays put between
+     * files, and the batch runner clears it when the batch ends.
+     * [onPrepared] fires with the exact spooled size, [onProgress]
+     * with (sent, total, speed) on each progress update, [onWaitingAck]
+     * when all bytes are written and the PC is confirming. Returns Sent
+     * only after the PC confirms it. */
+    private suspend fun sendSingleFile(
+        uri: Uri,
+        isBatch: Boolean,
+        preflight: Boolean,
+        onPrepared: ((Long) -> Unit)? = null,
+        onProgress: ((Long, Long, Double) -> Unit)? = null,
+        onWaitingAck: (() -> Unit)? = null
+    ): SendOutcome {
+        val s = socket ?: run { _transferError.value = "Not connected. Join the PC and try again."; return SendOutcome.NotSent("not connected") }
+        if (preflight) {
             // The session can have died since the last heartbeat (at most
             // 10 s ago). Ping and wait for the pong before spooling a
             // whole file into a send that would fail at the first write.
             // verifyAlive already fails the session when it is dead.
-            if (!verifyAlive(2000)) return@launch
-            val resolver = context.contentResolver
-            var name = "file"
-            resolver.query(uri, null, null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (ni >= 0) name = c.getString(ni) ?: name
-                }
-            }
-            name = basenameOnly(name)
-            _busyPhase.value = BusyPhase.PREPARING
-            // Spool the picked file to a local temp copy first. The size
-            // reported by a content provider (OpenableColumns.SIZE) is
-            // not trustworthy: for cloud-backed files it can be 0 or
-            // stale, while the stream delivers the real bytes. Sending
-            // a header whose size does not match the bytes that follow
-            // makes the PC read the leftover file bytes as a header,
-            // fail with "bad header length", close the session, and the
-            // phone then fails with Broken pipe. Size, hash and bytes
-            // all come from the same local spool, so they cannot disagree.
-            val spool = File(context.cacheDir, "send-${UUID.randomUUID()}.tmp")
+            if (!verifyAlive(2000)) return SendOutcome.NotSent("connection lost")
+        }
+        val name = resolveUriName(uri)
+        _busyPhase.value = BusyPhase.PREPARING
+        // Spool the picked file to a local temp copy first. The size
+        // reported by a content provider (OpenableColumns.SIZE) is
+        // not trustworthy: for cloud-backed files it can be 0 or
+        // stale, while the stream delivers the real bytes. Sending
+        // a header whose size does not match the bytes that follow
+        // makes the PC read the leftover file bytes as a header,
+        // fail with "bad header length", close the session, and the
+        // phone then fails with Broken pipe. Size, hash and bytes
+        // all come from the same local spool, so they cannot disagree.
+        val spool = File(context.cacheDir, "send-${UUID.randomUUID()}.tmp")
+        try {
+            val opened = context.contentResolver.openInputStream(uri)
+                ?: run { _transferError.value = "send failed: could not open $name"; return SendOutcome.NotSent("could not open $name") }
+            opened.use { inp -> FileOutputStream(spool).use { out -> inp.copyTo(out) } }
+            val (counted, sha) = FileInputStream(spool).use { hashAndCount(it) }
+            val size = counted
+            onPrepared?.invoke(size)
+            _busyPhase.value = BusyPhase.TRANSFERRING
+            _active.value = ActiveTransfer(name, TransferDirection.SEND, size, 0, "", 0f, null)
+            val header = JSONObject().apply { put("type", "file"); put("name", name); put("size", size); put("sha256", sha) }
+            val start = System.currentTimeMillis()
+            var sent = 0L
+            var lastReport = 0L
+            val ackDeferred = CompletableDeferred<AckResult?>()
+            pendingAck?.complete(null)
+            pendingAck = ackDeferred
             try {
-                val opened = resolver.openInputStream(uri)
-                    ?: run { _transferError.value = "send failed: could not open $name"; return@launch }
-                opened.use { inp -> FileOutputStream(spool).use { out -> inp.copyTo(out) } }
-                val (counted, sha) = FileInputStream(spool).use { hashAndCount(it) }
-                val size = counted
-                _busyPhase.value = BusyPhase.TRANSFERRING
-                _active.value = ActiveTransfer(name, TransferDirection.SEND, size, 0, "", 0f, null)
-                val header = JSONObject().apply { put("type", "file"); put("name", name); put("size", size); put("sha256", sha) }
-                val start = System.currentTimeMillis()
-                var sent = 0L
-                var lastReport = 0L
-                val ackDeferred = CompletableDeferred<AckResult?>()
-                pendingAck?.complete(null)
-                pendingAck = ackDeferred
-                try {
-                    sendMutex.withLock {
-                        writeHeader(s.outputStream, header.toString().toByteArray())
-                        FileInputStream(spool).use { inp ->
-                            val buf = ByteArray(128 * 1024)
-                            while (true) {
-                                val r = inp.read(buf)
-                                if (r < 0) break
-                                if (r == 0) continue
-                                s.outputStream.write(buf, 0, r)
-                                sent += r
-                                val now = System.currentTimeMillis()
-                                if (now - lastReport >= 100 || sent >= size) {
-                                    lastReport = now
-                                    val elapsed = ((now - start) / 1000.0).coerceAtLeast(0.1)
-                                    val speed = sent / elapsed
-                                    _active.value = ActiveTransfer(name, TransferDirection.SEND, size, sent, formatSpeed(speed), if (size > 0) sent.toFloat() / size else 0f, formatEta(speed, size - sent))
-                                }
+                sendMutex.withLock {
+                    writeHeader(s.outputStream, header.toString().toByteArray())
+                    FileInputStream(spool).use { inp ->
+                        val buf = ByteArray(128 * 1024)
+                        while (true) {
+                            val r = inp.read(buf)
+                            if (r < 0) break
+                            if (r == 0) continue
+                            s.outputStream.write(buf, 0, r)
+                            sent += r
+                            val now = System.currentTimeMillis()
+                            if (now - lastReport >= 100 || sent >= size) {
+                                lastReport = now
+                                val elapsed = ((now - start) / 1000.0).coerceAtLeast(0.1)
+                                val speed = sent / elapsed
+                                _active.value = ActiveTransfer(name, TransferDirection.SEND, size, sent, formatSpeed(speed), if (size > 0) sent.toFloat() / size else 0f, formatRemainingTime(size - sent, speed))
+                                onProgress?.invoke(sent, size, speed)
                             }
-                            s.outputStream.flush()
                         }
+                        s.outputStream.flush()
                     }
-                    // Do not call it sent until the PC confirms it: the PC
-                    // acks only after reading every byte, verifying the
-                    // SHA-256 and renaming the .part file. On success the
-                    // ack carries the actual saved name.
-                    _busyPhase.value = BusyPhase.WAITING_ACK
-                    val ack = withTimeout(60_000) { ackDeferred.await() }
-                    _active.value = null
-                    _busyPhase.value = null
-                    if (ack == null) {
-                        addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
-                        _transferError.value = "send failed: connection lost before PC confirmed $name ($sent of $size bytes sent)"
-                    } else if (!ack.ok) {
-                        addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
-                        _transferError.value = "send failed: PC rejected $name: ${ack.reason.ifBlank { "unknown reason" }}"
-                    } else {
-                        addHistory(name, ack.name, ack.name != name, size, TransferDirection.SEND, TransferStatus.SUCCESS, true)
-                    }
-                } catch (e: Exception) {
-                    pendingAck = null
-                    _active.value = null
-                    _busyPhase.value = null
+                }
+                // Do not call it sent until the PC confirms it: the PC
+                // acks only after reading every byte, verifying the
+                // SHA-256 and renaming the .part file. On success the
+                // ack carries the actual saved name.
+                _busyPhase.value = BusyPhase.WAITING_ACK
+                onWaitingAck?.invoke()
+                val ack = withTimeout(60_000) { ackDeferred.await() }
+                clearActiveIfSingle(isBatch)
+                if (ack == null) {
                     addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
-                    _transferError.value = "send failed: ${e.message} ($sent of $size bytes sent)"
+                    _transferError.value = "send failed: connection lost before PC confirmed $name ($sent of $size bytes sent)"
+                    return SendOutcome.NotSent("connection lost")
+                } else if (!ack.ok) {
+                    addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
+                    _transferError.value = "send failed: PC rejected $name: ${ack.reason.ifBlank { "unknown reason" }}"
+                    return SendOutcome.NotSent("PC rejected $name")
+                } else {
+                    addHistory(name, ack.name, ack.name != name, size, TransferDirection.SEND, TransferStatus.SUCCESS, true)
+                    return SendOutcome.Sent(ack.name, size)
                 }
             } catch (e: Exception) {
-                _active.value = null
-                _busyPhase.value = null
-                _transferError.value = "send failed: ${e.message}"
-            } finally {
-                spool.delete()
+                pendingAck = null
+                clearActiveIfSingle(isBatch)
+                addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.FAILED, false)
+                _transferError.value = "send failed: ${e.message} ($sent of $size bytes sent)"
+                return SendOutcome.NotSent(e.message ?: "send failed")
+            }
+        } catch (e: Exception) {
+            clearActiveIfSingle(isBatch)
+            _transferError.value = "send failed: ${e.message}"
+            return SendOutcome.NotSent(e.message ?: "send failed")
+        } finally {
+            spool.delete()
+        }
+    }
+
+    /** Clear the active transfer when this was a single (non-batch)
+     * send. A batch leaves it in place so the panel stays put between
+     * files; the batch runner clears it when the batch ends. */
+    private fun clearActiveIfSingle(isBatch: Boolean) {
+        if (!isBatch) {
+            _active.value = null
+            _busyPhase.value = null
+        }
+    }
+
+    /** Clear the active transfer only when no batch is running. A
+     * batch owns the slot, so an inbound file finishing must not
+     * clear the batch's busy state and make Send file tappable
+     * mid-batch. */
+    private fun clearActiveIfNoBatch() {
+        if (_batch.value == null) {
+            _active.value = null
+            _busyPhase.value = null
+        }
+    }
+
+    /** Send several files as one batch, in picker result order, one at
+     * a time. A single URI is just a single send. The batch holds the
+     * transfer slot from the first preparation to the last
+     * acknowledgement, so the panel and busy controls stay in place
+     * between files. */
+    fun sendBatch(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        if (uris.size == 1) { sendFile(uris[0]); return }
+        if (_active.value != null || _busyPhase.value != null || _batch.value != null) {
+            _transferError.value = "A transfer is already in progress"
+            return
+        }
+        if (_connection.value != ConnectionState.CONNECTED || socket == null) {
+            _transferError.value = "Not connected. Join the PC and try again."
+            return
+        }
+        _transferError.value = null
+        _batchMessage.value = null
+        // Hold the slot synchronously, before the coroutine starts, so
+        // a single send cannot slip in between the tap and the first file.
+        _busyPhase.value = BusyPhase.PREPARING
+        val generation = ++batchGeneration
+        scope.launch {
+            runBatch(uris, generation)
+        }
+    }
+
+    /** Cancel the running batch. Invalidates the queue first, so a late
+     * acknowledgement cannot start the next file, then disconnects:
+     * the current build has no way to stop a send without closing the
+     * session. Completed files stay in Session history. */
+    fun cancelBatch() {
+        val batch = _batch.value ?: return
+        DiagLog.log("session", "cancelBatch (user) sent=${batch.sentCount} of ${batch.items.size}")
+        batchGeneration++
+        _batch.value = null
+        _active.value = null
+        _busyPhase.value = null
+        _batchMessage.value = "Batch cancelled · ${batch.sentCount} of ${batch.items.size} files sent"
+        disconnect()
+    }
+
+    /** The batch runner. Sends the snapshotted list in order, starting
+     * the next file only after the current file is confirmed. Stops on
+     * the first failure, on a disconnect, or on cancellation, and
+     * leaves the remaining items unsent for explicit reselection. */
+    private suspend fun runBatch(uris: List<Uri>, generation: Int) {
+        // Retain access to the selected URIs for the lifetime of the
+        // batch: the picker's transient permission can lapse while the
+        // batch is still sending.
+        uris.forEach { uri ->
+            try { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
+        }
+        // Snapshot the selected list at the start.
+        val items = uris.map { uri ->
+            BatchItem(id = UUID.randomUUID().toString(), uri = uri.toString(), name = resolveUriName(uri), providerSize = resolveUriSize(uri))
+        }
+        val startedAt = System.currentTimeMillis()
+        _batch.value = BatchState(items = items, activeIndex = 0, sentCount = 0, startedAtMs = startedAt)
+        var sent = 0
+        for (index in items.indices) {
+            if (generation != batchGeneration) return finishBatchCancelled(sent, items.size)
+            if (_connection.value != ConnectionState.CONNECTED) return finishBatchFailed(sent, items.size)
+            val item = items[index]
+            updateBatchItem(index) { it.copy(phase = BatchItemPhase.PREPARING) }
+            _batch.update { it?.copy(activeIndex = index) }
+            val outcome = sendSingleFile(
+                Uri.parse(item.uri),
+                isBatch = true,
+                // One pre-flight ping for the batch, before the first
+                // file. Later files rely on the heartbeat and on the
+                // write itself failing when the socket is dead.
+                preflight = index == 0,
+                onPrepared = { size ->
+                    updateBatchItem(index) { it.copy(spooledSize = size, phase = BatchItemPhase.SENDING) }
+                },
+                onProgress = { transferred, _, _ ->
+                    updateBatchProgress(index, transferred, startedAt)
+                },
+                onWaitingAck = {
+                    updateBatchItem(index) { it.copy(phase = BatchItemPhase.VERIFYING) }
+                    _batch.update { it?.copy(batchEtaText = "Verifying on PC") }
+                }
+            )
+            // A cancel (or disconnect) during this file ends the batch
+            // here, before the outcome is acted on.
+            if (generation != batchGeneration) return finishBatchCancelled(sent, items.size)
+            when (outcome) {
+                is SendOutcome.Sent -> {
+                    sent++
+                    updateBatchItem(index) { it.copy(phase = BatchItemPhase.SENT, savedName = outcome.savedName, transferredBytes = outcome.size) }
+                    _batch.update { it?.copy(sentCount = sent) }
+                }
+                is SendOutcome.NotSent -> {
+                    updateBatchItem(index) { it.copy(phase = BatchItemPhase.FAILED) }
+                    return finishBatchFailed(sent, items.size)
+                }
             }
         }
+        finishBatchSent(items.size)
+    }
+
+    /** Update one item in the live batch state. */
+    private fun updateBatchItem(index: Int, transform: (BatchItem) -> BatchItem) {
+        _batch.update { batch ->
+            batch?.copy(items = batch.items.mapIndexed { i, item -> if (i == index) transform(item) else item })
+        }
+    }
+
+    /** Update the active file's progress and recompute the batch's
+     * overall speed and ETA. The rate is the cumulative average since
+     * the batch started, so the ETA stays steady instead of jumping
+     * with each network chunk. */
+    private fun updateBatchProgress(index: Int, transferred: Long, startedAt: Long) {
+        _batch.update { batch ->
+            val b = batch ?: return@update batch
+            val items = b.items.mapIndexed { i, item -> if (i == index) item.copy(transferredBytes = transferred) else item }
+            val updated = b.copy(items = items)
+            val elapsed = ((System.currentTimeMillis() - startedAt) / 1000.0).coerceAtLeast(0.1)
+            val rate = updated.overallTransferred / elapsed
+            val total = updated.totalBytes
+            val eta = when {
+                total == null -> "Estimating time…"
+                else -> formatRemainingTime(total - updated.overallTransferred, rate) ?: "Estimating time…"
+            }
+            updated.copy(overallSpeedFormatted = formatSpeed(rate), batchEtaText = eta)
+        }
+    }
+
+    /** All files confirmed. The panel goes away; the outcome stays as
+     * a message under it, and the confirmed transfers stay in history. */
+    private fun finishBatchSent(count: Int) {
+        _active.value = null
+        _busyPhase.value = null
+        _batch.value = null
+        _batchMessage.value = "Batch sent · $count ${if (count == 1) "file" else "files"}"
+    }
+
+    /** Stopped by a file failure or a disconnect. The per-file error is
+     * already in [_transferError]; keep the confirmed count visible
+     * alongside it. Remaining items are unsent. */
+    private fun finishBatchFailed(sent: Int, total: Int) {
+        _active.value = null
+        _busyPhase.value = null
+        _batch.value = null
+        _batchMessage.value = "$sent of $total files sent"
+    }
+
+    /** Stopped by the user cancelling. Same shape as a failure, with
+     * the cancelled wording. */
+    private fun finishBatchCancelled(sent: Int, total: Int) {
+        _active.value = null
+        _busyPhase.value = null
+        _batch.value = null
+        _batchMessage.value = "Batch cancelled · $sent of $total files sent"
     }
 
     fun requestDownload(name: String) {
@@ -1142,12 +1395,6 @@ class SessionManager(private val context: Context) {
             bytesPerSec >= 1024 -> String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024)
             else -> String.format(Locale.US, "%.0f B/s", bytesPerSec)
         }
-    }
-
-    private fun formatEta(speed: Double, remaining: Long): String? {
-        if (speed <= 0) return null
-        val s = (remaining / speed).toLong()
-        return "~${s}s"
     }
 
     private fun friendlyError(e: Exception): String {

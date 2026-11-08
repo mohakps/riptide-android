@@ -39,6 +39,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.error
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -148,13 +152,27 @@ fun HomeScreen(
                         cursorColor = RiptideColors.Primary
                     ),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp)
+                        .semantics {
+                            if (uiState.showBlankAddressError) error("Enter a PC address.")
+                        }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+                // The helper and the blank-field warning share this
+                // 14/20 supporting-text slot, so the layout stays
+                // stable when the warning appears. The warning is
+                // announced when it first appears.
                 Text(
-                    text = if (uiState.isConnecting) "Connecting… · Up to 30 seconds" else "Hostname, IP or user@host",
-                    color = RiptideColors.OnSurfaceVariant,
-                    fontSize = 13.sp,
-                    lineHeight = 20.sp
+                    text = when {
+                        uiState.showBlankAddressError -> "Enter a PC address."
+                        uiState.isConnecting -> "Connecting… · Up to 30 seconds"
+                        else -> "Hostname, IP or user@host"
+                    },
+                    color = if (uiState.showBlankAddressError) RiptideColors.Error else RiptideColors.OnSurfaceVariant,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.semantics {
+                        if (uiState.showBlankAddressError) liveRegion = LiveRegionMode.Assertive
+                    }
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 if (uiState.isConnecting) {
@@ -169,9 +187,11 @@ fun HomeScreen(
                         Text("Cancel connection", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                     }
                 } else {
+                    // Join PC stays coral and tappable with an empty
+                    // field: tapping it runs validation, which shows
+                    // the blank-field warning instead of connecting.
                     Button(
                         onClick = { keyboardController?.hide(); viewModel.onJoinClicked() },
-                        enabled = uiState.hostInput.isNotBlank(),
                         modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                         shape = RoundedCornerShape(28.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)

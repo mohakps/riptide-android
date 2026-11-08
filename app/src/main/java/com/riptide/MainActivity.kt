@@ -65,9 +65,12 @@ import kotlinx.coroutines.launch
  * and remembers its originating tab.
  */
 class MainActivity : ComponentActivity() {
-    // Single-document picker (ACTION_OPEN_DOCUMENT) with ContentResolver.
-    private val pickFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) (application as RiptideApp).session.sendFile(uri)
+    // Multiple-document picker (ACTION_OPEN_DOCUMENT, multiple
+    // selection) with ContentResolver. One URI is a single send; two
+    // or more are one outgoing batch, in picker result order.
+    // Cancelling the picker leaves the Session as it was.
+    private val pickFile = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) (application as RiptideApp).session.sendBatch(uris)
     }
     // Folder picker (ACTION_OPEN_DOCUMENT_TREE) for the receive folder.
     // One launcher serves both Settings and the Session recovery dialog;

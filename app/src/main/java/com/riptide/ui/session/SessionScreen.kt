@@ -70,6 +70,7 @@ fun SessionScreen(
     var showDownloadDialog by remember { mutableStateOf(false) }
     var downloadPrefill by remember { mutableStateOf("") }
     var showCancelConfirm by remember { mutableStateOf(false) }
+    var showCancelBatchConfirm by remember { mutableStateOf(false) }
     var showDisconnectConfirm by remember { mutableStateOf(false) }
     var overflowOpen by remember { mutableStateOf(false) }
     // The same live state drives the app-bar status, the header and
@@ -220,6 +221,7 @@ fun SessionScreen(
                 val topGap = when {
                     uiState.showInterrupted -> 32.dp
                     uiState.activeTransfer != null || uiState.busyPhase != null -> 16.dp
+                    uiState.batchState != null -> 16.dp
                     uiState.downloadState is DownloadState.Denied -> 16.dp
                     uiState.downloadState is DownloadState.Waiting -> 16.dp
                     else -> 32.dp
@@ -344,15 +346,27 @@ fun SessionScreen(
                         Spacer(Modifier.height(16.dp))
                     }
 
-                    ActiveTransferHero(
-                        activeTransfer = uiState.activeTransfer,
-                        busyPhase = uiState.busyPhase,
-                        receiveFolderName = uiState.receiveFolderName,
-                        onCancel = { showCancelConfirm = true }
-                    )
+                    val batch = uiState.batchState
+                    if (batch != null) {
+                        BatchTransferPanel(
+                            batch = batch,
+                            onCancelBatch = { showCancelBatchConfirm = true }
+                        )
+                    } else {
+                        ActiveTransferHero(
+                            activeTransfer = uiState.activeTransfer,
+                            busyPhase = uiState.busyPhase,
+                            receiveFolderName = uiState.receiveFolderName,
+                            onCancel = { showCancelConfirm = true }
+                        )
+                    }
                     uiState.sessionError?.let { err ->
                         Spacer(Modifier.height(12.dp))
                         Text(text = err, color = RiptideColors.Error, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                    uiState.batchMessage?.let { msg ->
+                        Spacer(Modifier.height(12.dp))
+                        Text(text = msg, color = RiptideColors.OnSurfaceVariant, fontSize = 14.sp, lineHeight = 20.sp)
                     }
                     Spacer(Modifier.height(20.dp))
                 }
@@ -393,6 +407,36 @@ fun SessionScreen(
                         shape = RoundedCornerShape(28.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface)
                     ) { Text("Keep transferring") }
+                },
+                containerColor = RiptideColors.Surface,
+                shape = RoundedCornerShape(28.dp)
+            )
+        }
+        if (showCancelBatchConfirm) {
+            val batch = uiState.batchState
+            val remaining = batch?.let { it.items.size - it.sentCount } ?: 0
+            AlertDialog(
+                onDismissRequest = { showCancelBatchConfirm = false },
+                title = { Text("Cancel this batch?", color = RiptideColors.OnSurface) },
+                text = {
+                    Text(
+                        "This stops the current file and the remaining $remaining file${if (remaining == 1) "" else "s"} in the queue, and disconnects from the PC. Files already sent stay in Session history.",
+                        color = RiptideColors.OnSurfaceVariant
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { showCancelBatchConfirm = false; viewModel.onCancelBatch() },
+                        shape = RoundedCornerShape(28.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
+                    ) { Text("Cancel batch and disconnect") }
+                },
+                dismissButton = {
+                    Button(
+                        onClick = { showCancelBatchConfirm = false },
+                        shape = RoundedCornerShape(28.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface)
+                    ) { Text("Keep sending") }
                 },
                 containerColor = RiptideColors.Surface,
                 shape = RoundedCornerShape(28.dp)

@@ -635,3 +635,67 @@ Fixes in v0.2.1 (versionCode 4):
   the v0.6 brief (sheet with both navigation modes and short/large
   text, metrics at 320/360/412 dp and enlarged text, Session states,
   Settings rows, Carve icon under circle/squircle/themed masks).
+
+## v0.7 addendum (batch send, transfer ETA, Join PC validation, 2026-11-08)
+
+- Batch send: Send file opens OpenMultipleDocuments. One URI is the
+  existing single-file send; two or more are one batch in picker
+  result order. sendSingleFile is the awaitable single-file operation
+  (spool, hash, write, wait for the PC ack); the batch runner calls it
+  per file and starts the next only after a positive ack. The batch
+  holds the transfer slot (busy phase + active transfer) through
+  preparation, writing and acknowledgement, and canStartTransfer also
+  checks the batch state, so the panel and busy controls stay in place
+  between files. URI access is retained with
+  takePersistableUriPermission for the batch lifetime; spool files are
+  deleted in the send finally block. An inbound file finishing while a
+  batch runs no longer clears the batch's busy state.
+- Batch panel: "3 of 5" (34 sp medium, accessibility label "File 3 of
+  5") counts files; "62%" (29 sp monospace) with an OVERALL caption is
+  the overall percent by bytes, capped at 99% so 100% is reserved for
+  confirmed completion; the 8 dp coral bar advances by bytes and is
+  indeterminate when any size is unknown. The subtitle is the batch
+  ETA, "Estimating time…" when totals or a usable rate are unavailable,
+  and "Verifying on PC" while the last ack is pending. The active
+  filename sits in a #272525 inset (16 dp corners) with the phase
+  label. View details expands in place with the transferred pair and
+  speed, then the ordered list: green check + Sent, coral up-arrow +
+  Sending/Verifying on the active row (full fill while verifying),
+  file icon + Queued. Only the active row gets the fill (#352628 base,
+  #563438 fill, 12 dp corners, clipped). Cancel batch confirms first
+  and states that it stops the current file and the remaining queue
+  and disconnects; the queue is invalidated before disconnecting so a
+  late ack cannot start the next file. Confirmed files stay in history.
+- Time remaining: formatRemainingTime in FormatUtils ("2m 13s
+  remaining", at most two nonzero units, zero units omitted, at least
+  1s when anything remains, null with no usable rate). The batch rate
+  is the cumulative average since the batch started. The single
+  outgoing file shows the ETA in the footer row next to Cancel
+  (12/16 sp, tabular digits, wraps and grows at narrow widths and
+  large fonts, Cancel end-aligned). Sizes over a gigabyte use the GB
+  unit in formatBytes and formatBytesPair. Unit tests cover the GB
+  unit, the duration formatter, the ETA formatter, the batch derived
+  figures (position vs bytes, indeterminate on unknown size,
+  verifying reserves 100%), the batch blocking canStartTransfer, and
+  the blank Join validation.
+- Join PC: the button is always coral and tappable. A blank or
+  whitespace-only tap shows "Enter a PC address." in coral in the
+  14/20 supporting-text slot and returns before connecting; typing a
+  nonblank address clears it. The error is associated with the input
+  and announced when it first appears (live region). The keyboard Done
+  action runs the same validation.
+- Diagnostics log: no file is written automatically. Lines are kept in
+  memory (last 2000) and logcat; exportUri() (Share diagnostics log)
+  is the only place a file is written. A log can only be shared from a
+  running session.
+- Build evidence: compile, 42/42 unit tests, lint 0 errors 20
+  warnings, assembleRelease — BUILD SUCCESSFUL. Release APK 47 MB,
+  versionCode 15, versionName 0.7, SHA-256
+  842dd4e9e6297c4a90272d365666f2185d2d3bcc6ff07778221c20829706158f, same
+  signing cert c7b64485 (installs as an update).
+- Live phone checks are the user's step: the five acceptance items in
+  the v0.7 brief (picker cancel / single / several with duplicate
+  names and very different sizes, expand/collapse during file three,
+  slow startup / unknown size / zero-byte / verification / cancel and
+  disconnect, single-file ETA at 320/360/412 dp and enlarged text,
+  blank Join PC with empty and spaces-only input).

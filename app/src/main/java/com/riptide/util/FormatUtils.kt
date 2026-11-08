@@ -5,10 +5,11 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-/** "2.4 MB", "256 MB", "512 KB", "128 B". One decimal only when it matters. */
+/** "2.4 MB", "256 MB", "512 KB", "128 B", "1.24 GB". One decimal only when it matters. */
 fun formatBytes(bytes: Long): String {
     val b = bytes.coerceAtLeast(0L)
     return when {
+        b >= 1024L * 1024L * 1024L -> trimDecimal(b / (1024.0 * 1024.0 * 1024.0)) + " GB"
         b >= 1024L * 1024L -> trimDecimal(b / (1024.0 * 1024.0)) + " MB"
         b >= 1024L -> trimDecimal(b / 1024.0) + " KB"
         else -> "$b B"
@@ -21,6 +22,7 @@ private data class BytesUnit(val divisor: Double, val suffix: String)
 private fun unitFor(bytes: Long): BytesUnit {
     val b = bytes.coerceAtLeast(0L)
     return when {
+        b >= 1024L * 1024L * 1024L -> BytesUnit(1024.0 * 1024.0 * 1024.0, "GB")
         b >= 1024L * 1024L -> BytesUnit(1024.0 * 1024.0, "MB")
         b >= 1024L -> BytesUnit(1024.0, "KB")
         else -> BytesUnit(1.0, "B")
@@ -61,6 +63,30 @@ private fun formatValueInUnit(bytes: Long, unit: BytesUnit, locale: Locale): Str
 private fun trimDecimal(value: Double): String {
     val one = String.format(Locale.US, "%.1f", value)
     return if (one.endsWith(".0")) one.dropLast(2) else one
+}
+
+/** "2m 13s", "1h 41s", "2s", "1h 2m". At most two nonzero units;
+ * zero units are omitted, so an hour and 41 seconds with no minutes
+ * is "1h 41s". */
+fun formatDuration(totalSeconds: Long): String {
+    val s = totalSeconds.coerceAtLeast(0L)
+    val hours = s / 3600
+    val minutes = (s % 3600) / 60
+    val seconds = s % 60
+    val parts = listOf(hours to "h", minutes to "m", seconds to "s").filter { it.first > 0 }
+    if (parts.isEmpty()) return "0s"
+    return parts.take(2).joinToString(" ") { "${it.first}${it.second}" }
+}
+
+/** "2m 13s remaining", or null when there is no usable rate or
+ * nothing left to transfer. The caller shows "Estimating time…"
+ * when this returns null. A remaining amount that would round to
+ * zero seconds still shows at least one second: it is nearly done,
+ * not done. */
+fun formatRemainingTime(remainingBytes: Long, bytesPerSec: Double): String? {
+    if (remainingBytes <= 0 || bytesPerSec <= 0) return null
+    val seconds = (remainingBytes / bytesPerSec).toLong().coerceAtLeast(1L)
+    return "${formatDuration(seconds)} remaining"
 }
 
 /** Day group label for received history: TODAY, YESTERDAY, or "12 Oct 2026". */

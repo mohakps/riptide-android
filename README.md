@@ -2,6 +2,52 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.7: batch send, transfer ETA, Join PC validation
+
+- Batch send: Send file opens the native picker with multiple
+  selection. One URI is the existing single-file panel; two or more
+  are one outgoing batch, sent in picker result order, one at a time,
+  each starting only after the PC confirms the previous file. The
+  batch holds the transfer slot through preparation, writing and
+  acknowledgement, so the panel and busy controls stay in place
+  between files. A stable ID keeps two files with the same name
+  distinct. Picker cancellation leaves Session as it was. URI access
+  is retained for the batch lifetime, and spool files are cleaned up
+  on completion, cancellation and failure.
+- Batch panel: "3 of 5" (34 sp) counts files, "62%" (29 sp monospace)
+  is the overall percent by bytes, and the 8 dp coral bar advances
+  by bytes. The subtitle estimates the whole batch. The active
+  filename sits in a #272525 inset with the phase ("Sending now",
+  "Preparing file", "Verifying on PC"). View details expands in place
+  with the transferred total, speed, and the ordered file list; the
+  active row doubles as its own progress bar (#352628 base, #563438
+  fill, 12 dp corners) while sent rows get a green check and queued
+  rows stay neutral. Cancel batch confirms first: it stops the
+  current file and the remaining queue and disconnects, and a late
+  acknowledgement cannot start the next file. Confirmed files stay
+  in Session history; on success the panel reports "Batch sent · 5
+  files", on failure the confirmed count ("2 of 5 files sent").
+  Sizes over a gigabyte now use the GB unit ("1.2/2 GB").
+- Time remaining: short durations ("2m 13s remaining", "1h 41s
+  remaining", "2s remaining", at most two nonzero units) from a
+  stable cumulative rate. The batch subtitle estimates all bytes
+  left; "Estimating time…" when totals or a usable rate are
+  unavailable, "Verifying on PC" while the last acknowledgement is
+  pending, and 100% is reserved for confirmed completion. The single
+  outgoing file shows the same ETA in the footer row next to Cancel,
+  12/16 sp with tabular digits, wrapping instead of clipping at
+  narrow widths and large fonts.
+- Join PC: the button stays coral and tappable with an empty field.
+  Tapping it with a blank or whitespace-only address shows "Enter a
+  PC address." in coral in the helper slot and returns before any
+  connection attempt. Typing a nonblank address clears the warning
+  and restores the helper. The keyboard submit action runs the same
+  validation.
+- Diagnostics log: no log file is written automatically. Lines are
+  kept in memory (last 2000) and logcat only; Share diagnostics log
+  in Settings is the only place a file is written. A log can only be
+  shared from a running session.
+
 ## v0.6: verification sheet, transfer metrics, Session app bar, Settings rows, Tidecut Carve icon
 
 - First-connection sheet opens directly expanded (partial state skipped)
@@ -354,6 +400,13 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.7 release APK
+
+- `app-release.apk`, 47 MB, versionCode 15, versionName 0.7, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `842dd4e9e6297c4a90272d365666f2185d2d3bcc6ff07778221c20829706158f`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2/v0.3.3/v0.3.4/v0.4/v0.5/v0.5.1/v0.6, installs as an update).
+- Batch send, transfer ETA, Join PC validation, log file only on Share.
 
 ## v0.6 release APK
 

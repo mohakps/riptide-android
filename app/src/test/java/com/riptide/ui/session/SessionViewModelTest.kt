@@ -53,4 +53,24 @@ class SessionViewModelTest {
         vm.setDownloadState(DownloadState.Idle)
         assertTrue(vm.uiState.value.canStartTransfer)
     }
+
+    @Test
+    fun testBatchBlocksSecondTransfer() {
+        val vm = SessionViewModel()
+        vm.setConnected(true)
+        assertTrue(vm.uiState.value.canStartTransfer)
+        val uri = "content://com.example/1"
+        vm.setBatchState(
+            com.riptide.ui.model.BatchState(
+                items = listOf(
+                    com.riptide.ui.model.BatchItem(id = "1", uri = uri, name = "a.pdf", providerSize = 100L),
+                    com.riptide.ui.model.BatchItem(id = "2", uri = uri, name = "b.mp4", providerSize = 200L)
+                ),
+                activeIndex = 0
+            )
+        )
+        assertFalse(vm.uiState.value.canStartTransfer)
+        vm.setBatchState(null)
+        assertTrue(vm.uiState.value.canStartTransfer)
+    }
 }

@@ -61,19 +61,31 @@ class HomeViewModel(private val session: SessionManager? = null) : ViewModel() {
     }
 
     fun onHostInputChanged(input: String) {
-        _uiState.update { it.copy(hostInput = input.trim()) }
+        _uiState.update {
+            val trimmed = input.trim()
+            // Typing a nonblank address clears the blank-field warning
+            // and restores the helper; deleting back to blank keeps the
+            // warning until a real address is entered.
+            it.copy(hostInput = trimmed, showBlankAddressError = if (trimmed.isNotBlank()) false else it.showBlankAddressError)
+        }
     }
 
     fun setSavedPeers(peers: List<SavedPeer>) {
         _uiState.update { it.copy(savedPeers = peers) }
     }
 
-    /** Validate and start one Join attempt. Empty address disables Join; a
-     * second attempt while connecting is ignored by SessionManager. */
+    /** Validate and start one Join attempt. The button stays coral and
+     * tappable with an empty field: tapping it with a blank address
+     * shows "Enter a PC address." and returns before any connection
+     * attempt. A second attempt while connecting is ignored by
+     * SessionManager. */
     fun onJoinClicked() {
         val host = _uiState.value.hostInput
-        if (host.isBlank()) return
-        _uiState.update { it.copy(isConnecting = true, connectionError = null) }
+        if (host.isBlank()) {
+            _uiState.update { it.copy(showBlankAddressError = true) }
+            return
+        }
+        _uiState.update { it.copy(showBlankAddressError = false, isConnecting = true, connectionError = null) }
         session?.connect(host)
     }
 
