@@ -15,7 +15,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -48,17 +47,6 @@ fun DevicesScreen(
     val peers by viewModel.savedPeers.collectAsState()
     Scaffold(
         topBar = { RiptideTopBar(onOpenSettings = onNavigateToSettings) },
-        bottomBar = {
-            Surface(color = RiptideColors.Background) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    BottomInfoPanel(
-                        message = "Saved identity does not mean the PC is online.",
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    )
-                    Spacer(Modifier.height(12.dp))
-                }
-            }
-        },
         containerColor = RiptideColors.Background,
         modifier = modifier
     ) { padding ->
@@ -122,6 +110,11 @@ fun DevicesScreen(
                         }
                     }
                 }
+                // The tip is the last item of the scrolling body, not a
+                // fixed footer: 24 dp above, 24 dp trailing padding
+                // below, moving with the list.
+                Spacer(modifier = Modifier.height(24.dp))
+                BottomInfoPanel(message = "Saved identity does not mean the PC is online.")
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }

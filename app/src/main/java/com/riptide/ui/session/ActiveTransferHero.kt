@@ -49,7 +49,8 @@ fun ActiveTransferHero(
     activeTransfer: ActiveTransfer?,
     busyPhase: BusyPhase?,
     onCancel: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    receiveFolderName: String = "Downloads/Riptide"
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -112,7 +113,7 @@ fun ActiveTransferHero(
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        text = "Send a file or request one from your PC. Incoming files save to Downloads/Riptide.",
+                        text = "Send a file or request one from your PC. Incoming files save to $receiveFolderName.",
                         color = RiptideColors.OnSurfaceVariant,
                         fontSize = 14.sp,
                         lineHeight = 20.sp

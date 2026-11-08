@@ -32,7 +32,7 @@ import com.riptide.util.formatBytes
  * SHA-256-verified rows say Verified. Long names wrap.
  */
 @Composable
-fun SessionHistoryFeed(records: List<TransferRecord>, modifier: Modifier = Modifier) {
+fun SessionHistoryFeed(records: List<TransferRecord>, modifier: Modifier = Modifier, disconnected: Boolean = false) {
     Column(modifier = modifier.fillMaxWidth()) {
         Text(
             text = "THIS SESSION",
@@ -46,7 +46,8 @@ fun SessionHistoryFeed(records: List<TransferRecord>, modifier: Modifier = Modif
         )
         if (records.isEmpty()) {
             Text(
-                text = "No transfers in this session yet.",
+                text = if (disconnected) "No completed transfers in this session yet."
+                    else "No transfers in this session yet.",
                 color = RiptideColors.OnSurfaceVariant,
                 fontSize = 14.sp,
                 lineHeight = 20.sp,

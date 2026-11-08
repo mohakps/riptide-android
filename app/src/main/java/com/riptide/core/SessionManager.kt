@@ -8,7 +8,10 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import com.riptide.data.PeerRepository
+import com.riptide.data.ReceiveFolder
+import com.riptide.data.ReceiveFolderRepository
 import com.riptide.data.ReceivedHistoryRepository
 import com.riptide.data.SavedPeerRecord
 import com.riptide.service.TransferService
@@ -81,6 +84,7 @@ class SessionManager(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val identity = IdentityManager(context)
     private val peers = PeerRepository(context)
+    private val receiveFolderRepo = ReceiveFolderRepository(context)
     private val receivedHistoryRepo = ReceivedHistoryRepository(context.filesDir)
 
     val myCode: String get() = try { identity.code() } catch (_: Exception) { "------" }
@@ -127,6 +131,16 @@ class SessionManager(private val context: Context) {
     private val _savedPeers = MutableStateFlow<List<SavedPeerRecord>>(emptyList())
     /** Sorted by last successful connection, most recent first. */
     val savedPeers: StateFlow<List<SavedPeerRecord>> = _savedPeers.asStateFlow()
+    /** Where received files are saved. Null tree URI means the default,
+     * Downloads/Riptide. */
+    private val _receiveFolder = MutableStateFlow(receiveFolderRepo.load())
+    val receiveFolder: StateFlow<ReceiveFolder> = _receiveFolder.asStateFlow()
+    /** A verified file waiting for the user to pick a folder after the
+     * saved destination lost access. The part file is kept until the
+     * user chooses; the ack and history wait for that choice. */
+    data class PendingReceive(val part: File, val name: String, val size: Long, val session: DialResult)
+    private val _pendingReceive = MutableStateFlow<PendingReceive?>(null)
+    val pendingReceive: StateFlow<PendingReceive?> = _pendingReceive.asStateFlow()
 
     private var socket: SSLSocket? = null
     private var readerJob: Job? = null
@@ -135,6 +149,14 @@ class SessionManager(private val context: Context) {
     /** Incremented on every cancel; a dial that finishes after its generation
      * changed is stale and must not open a session. */
     @Volatile private var attemptGeneration = 0
+    /** Monotonic generation for connection attempts. disconnect() captures
+     * it so a late cleanup never clobbers a session that started after
+     * the disconnect was tapped. */
+    @Volatile private var connectGeneration = 0
+    /** Serializes an identity reset with the hello exchange (the only
+     * place the identity is read to sign). The trust-approval wait sits
+     * before the exchange, so the lock is never held across it. */
+    private val identityMutex = Mutex()
     private val sendMutex = Mutex()
     private var approvalDecision: ((Boolean) -> Unit)? = null
     private var currentHost: String = ""
@@ -170,6 +192,92 @@ class SessionManager(private val context: Context) {
 
     fun setDeviceName(name: String) {
         peers.setDeviceName(name)
+    }
+
+    /** Save a folder the user picked with the system picker. Returns
+     * true only when the access was retained and the folder is actually
+     * writable, so a choice that cannot be used is never saved. */
+    fun setReceiveFolder(treeUri: Uri): Boolean {
+        val uriStr = treeUri.toString()
+        if (!receiveFolderRepo.takePersistableAccess(treeUri)) return false
+        if (!receiveFolderRepo.isWritable(uriStr)) return false
+        val display = receiveFolderRepo.displayNameFor(treeUri)
+        receiveFolderRepo.save(uriStr, display)
+        _receiveFolder.value = ReceiveFolder(uriStr, display)
+        DiagLog.log("session", "receive folder set: $display")
+        return true
+    }
+
+    /** Back to the default, Downloads/Riptide. */
+    fun clearReceiveFolder() {
+        receiveFolderRepo.clear()
+        _receiveFolder.value = ReceiveFolder(null, ReceiveFolderRepository.DEFAULT_DISPLAY_NAME)
+        DiagLog.log("session", "receive folder cleared to default")
+    }
+
+    /** A verified file is waiting because the saved folder lost access.
+     * Use the default folder and retry the save. */
+    fun resolvePendingReceiveUseDefault() {
+        val pending = _pendingReceive.value ?: return
+        _pendingReceive.value = null
+        scope.launch {
+            clearReceiveFolder()
+            val saved = saveReceived(pending.part, pending.name)
+            completePendingReceive(pending, saved)
+        }
+    }
+
+    /** A verified file is waiting because the saved folder lost access.
+     * Save the newly picked folder and retry the save there. */
+    fun resolvePendingReceiveChooseFolder(treeUri: Uri) {
+        val pending = _pendingReceive.value ?: return
+        _pendingReceive.value = null
+        scope.launch {
+            if (!setReceiveFolder(treeUri)) {
+                // The new folder cannot be used either: keep the file
+                // in the default folder rather than losing it.
+                clearReceiveFolder()
+            }
+            val saved = saveReceived(pending.part, pending.name)
+            completePendingReceive(pending, saved)
+        }
+    }
+
+    /** Dismiss a pending receive without saving. The file is lost, but
+     * the PC is told so it does not hang waiting for an ack. */
+    fun dismissPendingReceive() {
+        val pending = _pendingReceive.value ?: return
+        _pendingReceive.value = null
+        scope.launch {
+            try { pending.part.delete() } catch (_: Exception) {}
+            addHistory(pending.name, pending.name, false, pending.size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
+            _transferError.value = "Could not save ${pending.name}: the receive folder is no longer accessible"
+            sendAck(pending.session, pending.name, false, "save failed")
+        }
+    }
+
+    /** True when an identity reset is allowed: no session, handshake or
+     * transfer is active. The Settings row uses this to enable or
+     * disable Reset identity. */
+    fun canResetIdentity(): Boolean {
+        return _connection.value == ConnectionState.IDLE &&
+            _active.value == null &&
+            _busyPhase.value == null &&
+            _approval.value == null &&
+            _approvalPhase.value == ApprovalPhase.NONE
+    }
+
+    /** Regenerate the identity. Serialized with the hello exchange by
+     * [identityMutex], so a reset can never swap the identity while a
+     * handshake is signing with it. Rechecks eligibility inside the
+     * lock. Returns true on success; on failure the prior identity is
+     * kept and false is returned. */
+    suspend fun resetIdentity(): Boolean {
+        return identityMutex.withLock {
+            if (!canResetIdentity()) return@withLock false
+            DiagLog.log("session", "resetIdentity")
+            identity.reset()
+        }
     }
 
     fun forgetPeer(host: String) {
@@ -221,6 +329,7 @@ class SessionManager(private val context: Context) {
 
     fun connect(hostInput: String) {
         if (_connection.value == ConnectionState.CONNECTING) return
+        connectGeneration++
         DiagLog.log("session", "connect start host=$hostInput")
         // Set CONNECTING synchronously, before launching: two rapid
         // connects (double tap, or a resume rejoin racing a manual
@@ -279,32 +388,53 @@ class SessionManager(private val context: Context) {
         }
     }
 
+    /** Deliberate disconnect. The cleanup runs in a coroutine, so a
+     * rejoin tapped in the same instant can start before it finishes.
+     * The cleanup therefore owns only what it captured at tap time:
+     * it sends bye to the captured socket, cancels the captured jobs,
+     * and closes the captured socket without touching the field when a
+     * rejoin has already replaced it. It resets the state to IDLE only
+     * when no new connect started since the tap, so a fresh session is
+     * never clobbered by the old one's cleanup. */
     fun disconnect() {
         DiagLog.log("session", "disconnect (user)")
         attemptGeneration++
         connectJob?.cancel()
         connectJob = null
         lastConnectedHost = null
+        val gen = connectGeneration
+        val sock = socket
+        val reader = readerJob
+        val heartbeat = heartbeatJob
         scope.launch {
             try {
                 sendMutex.withLock {
-                    socket?.let { s ->
+                    sock?.let { s ->
                         try { writeHeader(s.outputStream, JSONObject().put("type", "bye").toString().toByteArray()) } catch (_: Exception) {}
                     }
                 }
             } catch (_: Exception) {}
-            readerJob?.cancel()
-            heartbeatJob?.cancel()
-            closeSocket()
-            stopSessionService()
-            _approval.value = null
-            _approvalPhase.value = ApprovalPhase.NONE
-            _error.value = null
-            _transferError.value = null
-            _busyPhase.value = null
-            _downloadState.value = DownloadState.Idle
-            _connection.value = ConnectionState.IDLE
-            _active.value = null
+            reader?.cancel()
+            heartbeat?.cancel()
+            // Close the captured socket. If a rejoin replaced the field
+            // meanwhile, close the old socket directly and leave the
+            // new one alone.
+            if (socket === sock) {
+                closeSocket()
+            } else {
+                try { sock?.close() } catch (_: Exception) {}
+            }
+            if (connectGeneration == gen) {
+                stopSessionService()
+                _approval.value = null
+                _approvalPhase.value = ApprovalPhase.NONE
+                _error.value = null
+                _transferError.value = null
+                _busyPhase.value = null
+                _downloadState.value = DownloadState.Idle
+                _connection.value = ConnectionState.IDLE
+                _active.value = null
+            }
         }
     }
 
@@ -438,7 +568,10 @@ class SessionManager(private val context: Context) {
         socket = null
     }
 
-    private data class DialResult(val socket: SSLSocket, val peerDevice: String, val serverFingerprint: String)
+    /** A dialled session: the live socket, the peer device name from
+     * hello_ok, and the server fingerprint. Public because a pending
+     * receive (waiting for the folder choice) carries it. */
+    data class DialResult(val socket: SSLSocket, val peerDevice: String, val serverFingerprint: String)
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private suspend fun dial(host: String): DialResult {
@@ -500,38 +633,44 @@ class SessionManager(private val context: Context) {
                 _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
             }
         }
-        val myDer = identity.certDer()
-        val hello = JSONObject().apply {
-            put("type", "hello")
-            put("device", deviceName)
-            put("host", host)
-            put("cert", AndroidBase64.encodeToString(myDer, AndroidBase64.NO_WRAP))
-        }
-        val out = tls.outputStream
-        val input = tls.inputStream
-        writeHeader(out, hello.toString().toByteArray())
-        val reply = JSONObject(String(readHeaderBytes(input)))
-        var peerDevice = ""
-        when (reply.optString("type")) {
-            "hello_ok" -> { peerDevice = reply.optString("device") }
-            "error" -> throw IllegalStateException("host rejected: ${reply.optString("message")}")
-            "hello_challenge" -> {
-                val nonce = AndroidBase64.decode(reply.optString("nonce"), AndroidBase64.DEFAULT)
-                val sig = identity.signNonce(nonce)
-                val proof = JSONObject().apply {
-                    put("type", "hello_proof")
-                    put("signature", AndroidBase64.encodeToString(sig, AndroidBase64.NO_WRAP))
-                }
-                writeHeader(out, proof.toString().toByteArray())
-                val ok = JSONObject(String(readHeaderBytes(input)))
-                if (ok.optString("type") == "error") throw IllegalStateException("host rejected: ${ok.optString("message")}")
-                if (ok.optString("type") != "hello_ok") throw IllegalStateException("host did not accept the session")
-                peerDevice = ok.optString("device")
+        // The hello exchange reads the identity (cert + nonce signature).
+        // Hold the identity lock across it so a reset can never swap the
+        // identity mid-handshake. The trust-approval wait above is outside
+        // the lock, so the lock is never held across user input.
+        return identityMutex.withLock {
+            val myDer = identity.certDer()
+            val hello = JSONObject().apply {
+                put("type", "hello")
+                put("device", deviceName)
+                put("host", host)
+                put("cert", AndroidBase64.encodeToString(myDer, AndroidBase64.NO_WRAP))
             }
-            else -> throw IllegalStateException("host did not accept the session")
+            val out = tls.outputStream
+            val input = tls.inputStream
+            writeHeader(out, hello.toString().toByteArray())
+            val reply = JSONObject(String(readHeaderBytes(input)))
+            var peerDevice = ""
+            when (reply.optString("type")) {
+                "hello_ok" -> { peerDevice = reply.optString("device") }
+                "error" -> throw IllegalStateException("host rejected: ${reply.optString("message")}")
+                "hello_challenge" -> {
+                    val nonce = AndroidBase64.decode(reply.optString("nonce"), AndroidBase64.DEFAULT)
+                    val sig = identity.signNonce(nonce)
+                    val proof = JSONObject().apply {
+                        put("type", "hello_proof")
+                        put("signature", AndroidBase64.encodeToString(sig, AndroidBase64.NO_WRAP))
+                    }
+                    writeHeader(out, proof.toString().toByteArray())
+                    val ok = JSONObject(String(readHeaderBytes(input)))
+                    if (ok.optString("type") == "error") throw IllegalStateException("host rejected: ${ok.optString("message")}")
+                    if (ok.optString("type") != "hello_ok") throw IllegalStateException("host did not accept the session")
+                    peerDevice = ok.optString("device")
+                }
+                else -> throw IllegalStateException("host did not accept the session")
+            }
+            socket = tls
+            DialResult(tls, peerDevice, serverFp)
         }
-        socket = tls
-        return DialResult(tls, peerDevice, serverFp)
     }
 
     private fun startHeartbeat(session: DialResult) {
@@ -711,30 +850,110 @@ class SessionManager(private val context: Context) {
             sendAck(session, name, false, "SHA-256 mismatch")
             return
         }
-        val saved = saveToDownloads(part, name)
-        if (saved == null) {
-            // Verification passed but saving failed: this is not a success,
-            // and it must not enter received history.
-            _active.value = null
-            _busyPhase.value = null
-            addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
-            _transferError.value = "Could not save $name to Downloads/Riptide"
-            sendAck(session, name, false, "save failed")
-            return
+        val saved = saveReceived(part, name)
+        when (saved) {
+            is SaveResult.Saved -> {
+                _active.value = null
+                _busyPhase.value = null
+                addHistory(name, saved.name, saved.name != name, size, TransferDirection.RECEIVE, TransferStatus.SUCCESS, true)
+                // Durable received history: only after verification AND saving succeed.
+                val record = ReceivedFileRecord(
+                    id = UUID.randomUUID().toString(), uri = saved.uri, originalName = name,
+                    savedName = saved.name, sourcePeer = _peerName.value.ifBlank { _peerHost.value },
+                    sizeBytes = size, verified = true
+                )
+                receivedHistoryRepo.add(record)
+                _receivedHistory.value = receivedHistoryRepo.load()
+                sendAck(session, saved.name, true, "")
+            }
+            is SaveResult.LostAccess -> {
+                // Keep the verified part file and wait for the user's
+                // choice. No ack and no history yet; the recovery dialog
+                // resolves it.
+                _pendingReceive.value = PendingReceive(part, name, size, session)
+                _active.value = null
+                _busyPhase.value = null
+                DiagLog.log("session", "receive folder lost access, waiting for user choice: $name")
+            }
+            is SaveResult.Failed -> {
+                // Verification passed but saving failed: this is not a success,
+                // and it must not enter received history.
+                _active.value = null
+                _busyPhase.value = null
+                addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
+                _transferError.value = "Could not save $name to ${_receiveFolder.value.displayName}"
+                sendAck(session, name, false, "save failed")
+            }
         }
-        val (savedName, savedUri) = saved
-        _active.value = null
-        _busyPhase.value = null
-        addHistory(name, savedName, savedName != name, size, TransferDirection.RECEIVE, TransferStatus.SUCCESS, true)
-        // Durable received history: only after verification AND saving succeed.
-        val record = ReceivedFileRecord(
-            id = UUID.randomUUID().toString(), uri = savedUri, originalName = name,
-            savedName = savedName, sourcePeer = _peerName.value.ifBlank { _peerHost.value },
-            sizeBytes = size, verified = true
-        )
-        receivedHistoryRepo.add(record)
-        _receivedHistory.value = receivedHistoryRepo.load()
-        sendAck(session, savedName, true, "")
+        return
+    }
+
+    /** Outcome of saving a verified file. LostAccess means a custom
+     * folder is set but its access is gone; the caller must offer the
+     * recovery choice instead of failing the transfer. */
+    sealed interface SaveResult {
+        data class Saved(val name: String, val uri: String) : SaveResult
+        object Failed : SaveResult
+        object LostAccess : SaveResult
+    }
+
+    /** Save a verified file to the current receive folder. */
+    private fun saveReceived(part: File, name: String): SaveResult {
+        val folder = _receiveFolder.value
+        if (folder.isDefault) {
+            val saved = saveToDownloads(part, name) ?: return SaveResult.Failed
+            return SaveResult.Saved(saved.first, saved.second)
+        }
+        val treeUri = folder.treeUri ?: return SaveResult.Failed
+        if (!receiveFolderRepo.hasPersistedAccess(treeUri)) return SaveResult.LostAccess
+        return saveToCustomFolder(part, name, treeUri)
+    }
+
+    /** Save a verified file into a user-picked folder via the Storage
+     * Access Framework. Returns LostAccess when the folder can no
+     * longer be written. */
+    private fun saveToCustomFolder(part: File, name: String, treeUri: String): SaveResult {
+        return try {
+            val dir = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return SaveResult.LostAccess
+            if (!dir.exists() || !dir.canWrite()) return SaveResult.LostAccess
+            val existing = mutableSetOf<String>()
+            dir.listFiles().forEach { it.name?.let { n -> existing.add(n) } }
+            val saved = uniqueFinalName(existing, name) ?: return SaveResult.Failed
+            val file = dir.createFile("application/octet-stream", saved) ?: return SaveResult.Failed
+            context.contentResolver.openOutputStream(file.uri)?.use { out ->
+                FileInputStream(part).use { inp -> inp.copyTo(out) }
+            } ?: return SaveResult.Failed
+            part.delete()
+            SaveResult.Saved(saved, file.uri.toString())
+        } catch (e: SecurityException) {
+            SaveResult.LostAccess
+        } catch (_: Exception) {
+            SaveResult.Failed
+        }
+    }
+
+    /** Finish a receive that waited for the folder-recovery choice:
+     * record the outcome and ack the PC. */
+    private suspend fun completePendingReceive(pending: PendingReceive, saved: SaveResult) {
+        when (saved) {
+            is SaveResult.Saved -> {
+                addHistory(pending.name, saved.name, saved.name != pending.name, pending.size, TransferDirection.RECEIVE, TransferStatus.SUCCESS, true)
+                val record = ReceivedFileRecord(
+                    id = UUID.randomUUID().toString(), uri = saved.uri, originalName = pending.name,
+                    savedName = saved.name, sourcePeer = _peerName.value.ifBlank { _peerHost.value },
+                    sizeBytes = pending.size, verified = true
+                )
+                receivedHistoryRepo.add(record)
+                _receivedHistory.value = receivedHistoryRepo.load()
+                sendAck(pending.session, saved.name, true, "")
+            }
+            else -> {
+                try { pending.part.delete() } catch (_: Exception) {}
+                addHistory(pending.name, pending.name, false, pending.size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
+                _transferError.value = "Could not save ${pending.name} to ${_receiveFolder.value.displayName}"
+                sendAck(pending.session, pending.name, false, "save failed")
+            }
+        }
     }
 
     /** Returns the actual saved name and its MediaStore content URI, or null

@@ -57,10 +57,15 @@ object DiagLog {
 
     /** Copy the whole internal log to Downloads/Riptide, replacing any
      * older copy. Returns true when the file is there to share. */
-    fun exportToDownloads(ctx: Context): Boolean {
+    fun exportToDownloads(ctx: Context): Boolean = exportUri(ctx) != null
+
+    /** Copy the whole internal log to Downloads/Riptide and return the
+     * content URI of the exported file, or null when it could not be
+     * written. The URI is what a share sheet sends. */
+    fun exportUri(ctx: Context): Uri? {
         return try {
             val internal = File(ctx.filesDir, FILE_NAME)
-            if (!internal.exists()) return false
+            if (!internal.exists()) return null
             val bytes = internal.readBytes()
             val resolver = ctx.contentResolver
             var uri = resolveDownloadsUri(ctx)
@@ -73,14 +78,14 @@ object DiagLog {
                 uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 downloadsUri = uri
             }
-            val target = uri ?: return false
+            val target = uri ?: return null
             resolver.openOutputStream(target, "w")?.use { out ->
                 out.write(bytes)
                 out.flush()
-            } ?: return false
-            true
+            } ?: return null
+            target
         } catch (_: Exception) {
-            false
+            null
         }
     }
 

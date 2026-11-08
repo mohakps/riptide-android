@@ -41,6 +41,8 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
             // never surface on Home as a join failure. They are collected
             // into sessionError too, so the Session screen shows them.
             viewModelScope.launch { s.transferError.collect { e -> _uiState.update { it.copy(sessionError = e) } } }
+            viewModelScope.launch { s.receiveFolder.collect { f -> _uiState.update { it.copy(receiveFolderName = f.displayName) } } }
+            viewModelScope.launch { s.pendingReceive.collect { p -> _uiState.update { it.copy(pendingReceive = p) } } }
             viewModelScope.launch {
                 s.connection.collect { c ->
                     val connected = c == ConnectionState.CONNECTED
@@ -50,8 +52,23 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
                     // so Home's connecting state shows instead.
                     val showInterrupted = if (c == ConnectionState.CONNECTING) false
                         else _uiState.value.showInterrupted || interrupted
-                    _uiState.update {
-                        recompute(it.copy(isConnected = connected, showInterrupted = showInterrupted))
+                    _uiState.update { state ->
+                        // Capture whether a transfer was actually in
+                        // progress when the connection died, then clear
+                        // the stale transfer data. The disconnected panel
+                        // is the only state shown after a loss, and the
+                        // screen also prioritizes it over cached data.
+                        val hadTransfer = state.activeTransfer != null || state.busyPhase != null
+                        val base = state.copy(isConnected = connected, showInterrupted = showInterrupted)
+                        val withFlag = if (interrupted) base.copy(interruptedTransfer = hadTransfer) else base
+                        val cleared = if (interrupted) {
+                            withFlag.copy(activeTransfer = null, busyPhase = null, downloadState = DownloadState.Idle)
+                        } else if (c == ConnectionState.CONNECTING) {
+                            withFlag.copy(interruptedTransfer = false)
+                        } else {
+                            withFlag
+                        }
+                        recompute(cleared)
                     }
                 }
             }
@@ -118,6 +135,14 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
         wasConnected = false
         _uiState.update { it.copy(isConnected = false, showInterrupted = false) }
         onNavBack()
+    }
+
+    fun resolvePendingReceiveUseDefault() {
+        session?.resolvePendingReceiveUseDefault()
+    }
+
+    fun resolvePendingReceiveChooseFolder(uri: android.net.Uri) {
+        session?.resolvePendingReceiveChooseFolder(uri)
     }
 
     class Factory(private val session: SessionManager) : ViewModelProvider.Factory {

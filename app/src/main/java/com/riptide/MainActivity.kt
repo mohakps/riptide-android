@@ -3,8 +3,10 @@ package com.riptide
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -66,6 +68,35 @@ class MainActivity : ComponentActivity() {
     // Single-document picker (ACTION_OPEN_DOCUMENT) with ContentResolver.
     private val pickFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) (application as RiptideApp).session.sendFile(uri)
+    }
+    // Folder picker (ACTION_OPEN_DOCUMENT_TREE) for the receive folder.
+    // One launcher serves both Settings and the Session recovery dialog;
+    // the caller sets the result callback before launching.
+    private var receiveFolderResult: ((Uri?) -> Unit)? = null
+    private val pickReceiveFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+        receiveFolderResult?.invoke(uri)
+        receiveFolderResult = null
+    }
+
+    private fun launchReceiveFolderPicker(onResult: (Uri?) -> Unit) {
+        receiveFolderResult = onResult
+        pickReceiveFolder.launch(null)
+    }
+
+    /** Export the diagnostics log and open the system share sheet with
+     * it. Only the user's tap opens the sheet. */
+    private fun shareDiagnostics() {
+        val uri = DiagLog.exportUri(this)
+        if (uri == null) {
+            Toast.makeText(this, "No diagnostics log yet", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, "Share diagnostics log"))
     }
     // Own scope for activity-lifecycle work (the onResume liveness
     // check). No new dependency: lifecycleScope would need
@@ -192,6 +223,12 @@ class MainActivity : ComponentActivity() {
                             viewModel = settingsVm,
                             onBack = ::closeSettings,
                             onShowFingerprint = { fingerprintOpen = true },
+                            onPickReceiveFolder = {
+                                launchReceiveFolderPicker { uri ->
+                                    if (uri != null) settingsVm.setReceiveFolder(uri)
+                                }
+                            },
+                            onShareDiagnostics = ::shareDiagnostics,
                             modifier = contentModifier
                         )
                         currentTab == RiptideTab.Devices -> DevicesScreen(
@@ -214,6 +251,11 @@ class MainActivity : ComponentActivity() {
                             (connection == ConnectionState.FAILED && sessionUiState.showInterrupted) -> SessionScreen(
                             viewModel = sessionVm,
                             onPickFileToSend = { pickFile.launch(arrayOf("*/*")) },
+                            onPickReceiveFolder = {
+                                launchReceiveFolderPicker { uri ->
+                                    if (uri != null) sessionVm.resolvePendingReceiveChooseFolder(uri)
+                                }
+                            },
                             onDisconnect = { /* already on Transfer; IDLE shows Home */ },
                             onBackToJoin = { currentTab = RiptideTab.Transfer },
                             modifier = contentModifier

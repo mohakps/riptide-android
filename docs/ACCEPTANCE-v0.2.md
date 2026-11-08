@@ -493,3 +493,82 @@ Fixes in v0.2.1 (versionCode 4):
   machine): the reopen-while-minimised test, Session and Devices
   screenshots at 360 and 412 dp, font scale 1.3/2.0, and normal and
   themed launcher icons, accounting for launcher icon caching.
+## v0.5 addendum (Tier 2 phone disconnect fix + Session corrections + Settings, 2026-11-08)
+
+- Tier 2 phone side of the disconnect fix. disconnect() is
+  fire-and-forget, and its cleanup used to close whatever socket the
+  shared field held and reset the state to IDLE. A rejoin tapped in
+  the same instant could have its new socket closed and its CONNECTED
+  state clobbered by the old cleanup. The cleanup now owns only what
+  it captured at tap time (socket, reader and heartbeat jobs) and
+  resets the state only when no new connect started since the tap
+  (connectGeneration). The PC side (bye fix v1.3.2, rejoin fix
+  v1.3.3) is already released; this is the matching phone hardening.
+  Identity reset is serialized with the hello exchange by an
+  identityMutex, so a reset can never swap the identity while a
+  handshake is signing with it; the trust-approval wait sits outside
+  the lock.
+- Session header: Disconnect is centered against the combined
+  name/IP block (Row verticalAlignment CenterVertically), with the
+  status dot and label on a separate line 8 dp below the header row,
+  outside the alignment. The IP is 15/22 sp monospace. The Disconnect
+  label is off-white (#F2F0EB) with a coral power glyph (#FF6B6B).
+  The button only shows while connected. Narrow (<360 dp) or font
+  scale >= 1.3 still drops the whole button below the peer details,
+  aligned end.
+- One session state at a time, from the same state as the header.
+  Connected idle shows "Make the move." (with the live receive folder
+  name), a transfer shows the active panel, and a loss shows
+  "Connection lost" with Back to Join and hides the send/download
+  controls and any stale busy text. The ViewModel captures whether a
+  transfer was actually in progress when the connection died
+  (interruptedTransfer) and clears the stale active/busy data; the
+  interrupted-transfer copy ("The file was not completed...") only
+  appears when a transfer actually stopped, and an idle loss says
+  "Reconnect to send or receive files." Completed session history
+  stays visible, with "No completed transfers in this session yet."
+  as the empty text when disconnected.
+- The info panels moved from the fixed footer into the scrolling
+  body, as the last item after the history or device list, with 24 dp
+  above and 24 dp trailing padding below. They move with the list.
+  The Session bottomBar is now only the action strip (hidden when
+  disconnected); Devices has no bottomBar.
+- Settings is rebuilt as one scrollable column: Device, Storage,
+  Identity, About, Diagnostics. Cards #1C1C1C, 24 dp radius, zero
+  elevation, 16 dp padding, 24 dp gutters. Section labels 12/16 muted
+  uppercase monospace, 1.3 sp tracking. Device name edits through an
+  "Edit device name" dialog (single field prefilled, blank rejected
+  after trimming); the fingerprint is untouched by a rename. Receive
+  folder is a system folder picker (ACTION_OPEN_DOCUMENT_TREE) with
+  persisted access; the choice is saved only after a writable check,
+  and Downloads/Riptide stays the default. A receive that finds its
+  folder inaccessible keeps the verified part file and waits for the
+  user to Choose folder or Use default folder (the ack and history
+  wait for that choice). Identity shows the live code (29/36 sp
+  monospace) and a Reset identity action that regenerates the
+  fingerprint via the existing local identity mechanism (temp file +
+  atomic rename, old identity restored on failure). Reset is disabled
+  during a session with "Disconnect before resetting your identity.",
+  rechecked at confirmation, and blocks duplicate submissions. About
+  reads the installed version and links to the GitHub repository.
+  Diagnostics keeps the log share, now opening the system share sheet
+  with the exported file.
+- New icons drawable/riptide_folder.xml, riptide_edit.xml,
+  riptide_reset.xml, riptide_external.xml, riptide_share.xml (stroke
+  style, matching the other riptide_* icons); all five were rendered
+  and checked visually before use. New dependency
+  androidx.documentfile:documentfile:1.0.1 for the folder picker.
+- Build evidence: full verify on this machine (assembleDebug,
+  testDebugUnitTest, lintDebug, assembleRelease) — BUILD SUCCESSFUL.
+  35 tests, 0 failures. Lint 0 errors, 23 warnings (same set as
+  before, the four ModifierParameter warnings fixed by reordering).
+  Release APK 47 MB, versionCode 12, versionName 0.5,
+  SHA-256 d51fec0cfebc943620633f204243d9ba5e407954cdd947e80f6d3bc8e2df4cc4,
+  apksigner v2 verified, same signing cert c7b64485 (installs as an
+  update).
+- Live phone checks are the user's step (no emulator on this
+  machine): the disconnect-then-rejoin flow, Settings screenshots,
+  the reset dialog, both Session states, Devices with the tip in
+  view, a rename, a folder pick and relaunch, a receive into the new
+  folder, opening a prior Received item, and the share sheet from
+  Share diagnostics log.

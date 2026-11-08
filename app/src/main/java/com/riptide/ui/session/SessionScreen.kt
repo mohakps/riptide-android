@@ -67,7 +67,8 @@ fun SessionScreen(
     onPickFileToSend: () -> Unit,
     onDisconnect: () -> Unit,
     onBackToJoin: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onPickReceiveFolder: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var showDownloadDialog by remember { mutableStateOf(false) }
@@ -118,13 +119,11 @@ fun SessionScreen(
             )
         },
         bottomBar = {
-            Surface(color = RiptideColors.Background) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    BottomInfoPanel(
-                        message = "Interrupted transfers restart from the beginning.",
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    )
-                    Spacer(Modifier.height(12.dp))
+            // The action strip lives here only while connected. After a
+            // loss the disconnected panel is the only state, and the
+            // send/download controls and busy text go away with it.
+            if (!uiState.showInterrupted) {
+                Surface(color = RiptideColors.Background) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -166,37 +165,45 @@ fun SessionScreen(
                 modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = gutter)
             ) {
                 Spacer(modifier = Modifier.height(8.dp))
-                // Compact peer header: name/host/status on the left,
-                // Disconnect on the right. On narrow screens or large
-                // text the whole button drops below the peer details,
-                // aligned end, so peer data is never overlapped or cut.
+                // Compact peer header. The Disconnect capsule is
+                // centered against the combined name/IP block, and the
+                // status line sits 8 dp below the header row, outside
+                // the alignment. On narrow screens or large text the
+                // whole button drops below the peer details, aligned
+                // end, so peer data is never overlapped or cut. The
+                // button only shows while connected.
                 val peerName = uiState.peerName.ifBlank { uiState.peerHost.ifBlank { "Connected PC" } }
+                val connected = !uiState.showInterrupted
                 val fontScale = LocalDensity.current.fontScale
                 val stackHeader = narrow || fontScale >= 1.3f
                 if (stackHeader) {
-                    PeerHeaderDetails(
-                        peerName = peerName,
-                        peerHost = uiState.peerHost,
-                        connected = !uiState.showInterrupted
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        DisconnectButton(peerName = peerName, onClick = { showDisconnectConfirm = true })
+                    PeerNameIp(peerName = peerName, peerHost = uiState.peerHost)
+                    if (connected) {
+                        Spacer(Modifier.height(12.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            DisconnectButton(peerName = peerName, onClick = { showDisconnectConfirm = true })
+                        }
                     }
                 } else {
-                    Row(verticalAlignment = Alignment.Top) {
-                        PeerHeaderDetails(
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        PeerNameIp(
                             peerName = peerName,
                             peerHost = uiState.peerHost,
-                            connected = !uiState.showInterrupted,
                             modifier = Modifier.weight(1f)
                         )
-                        Spacer(Modifier.width(16.dp))
-                        DisconnectButton(peerName = peerName, onClick = { showDisconnectConfirm = true })
+                        if (connected) {
+                            Spacer(Modifier.width(16.dp))
+                            DisconnectButton(peerName = peerName, onClick = { showDisconnectConfirm = true })
+                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
+                StatusRow(connected = connected)
+                Spacer(Modifier.height(8.dp))
 
+                // One session state at a time, from the same state as
+                // the header. Disconnection takes precedence over any
+                // cached transfer data.
                 if (uiState.showInterrupted) {
                     Surface(
                         shape = RoundedCornerShape(28.dp),
@@ -206,16 +213,18 @@ fun SessionScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(20.dp)) {
-                            Text(
-                                text = "TRANSFER INTERRUPTED",
-                                color = RiptideColors.Error,
-                                fontFamily = MonospaceFontFamily,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp,
-                                letterSpacing = 1.3.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Spacer(Modifier.height(12.dp))
+                            if (uiState.interruptedTransfer) {
+                                Text(
+                                    text = "TRANSFER INTERRUPTED",
+                                    color = RiptideColors.Error,
+                                    fontFamily = MonospaceFontFamily,
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    letterSpacing = 1.3.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(Modifier.height(12.dp))
+                            }
                             Text(
                                 text = "Connection lost",
                                 color = RiptideColors.OnSurface,
@@ -225,7 +234,11 @@ fun SessionScreen(
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "The file was not completed. Reconnect and start the transfer again.",
+                                text = if (uiState.interruptedTransfer) {
+                                    "The file was not completed. Reconnect and start the transfer again."
+                                } else {
+                                    "Reconnect to send or receive files."
+                                },
                                 color = RiptideColors.OnSurfaceVariant,
                                 fontSize = 14.sp,
                                 lineHeight = 20.sp
@@ -240,84 +253,90 @@ fun SessionScreen(
                         }
                     }
                     Spacer(Modifier.height(20.dp))
-                }
+                } else {
+                    val denied = uiState.downloadState as? DownloadState.Denied
+                    if (denied != null) {
+                        Surface(
+                            shape = RoundedCornerShape(28.dp),
+                            color = RiptideColors.Surface,
+                            tonalElevation = 0.dp,
+                            shadowElevation = 0.dp,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(20.dp)) {
+                                Text(
+                                    text = "DOWNLOAD DECLINED",
+                                    color = RiptideColors.Warning,
+                                    fontFamily = MonospaceFontFamily,
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    letterSpacing = 1.3.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    text = "Not approved on PC",
+                                    color = RiptideColors.OnSurface,
+                                    fontSize = 24.sp,
+                                    lineHeight = 32.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = "The PC declined \u201c${denied.filename}\u201d. Ask the owner, then request it again.",
+                                    color = RiptideColors.OnSurfaceVariant,
+                                    fontSize = 14.sp,
+                                    lineHeight = 20.sp
+                                )
+                                Spacer(Modifier.height(20.dp))
+                                Button(
+                                    onClick = {
+                                        viewModel.clearDownloadDenied()
+                                        downloadPrefill = denied.filename
+                                        showDownloadDialog = true
+                                    },
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                                    shape = RoundedCornerShape(28.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
+                                ) { Text("Request again", fontSize = 16.sp, fontWeight = FontWeight.Medium) }
+                            }
+                        }
+                        Spacer(Modifier.height(20.dp))
+                    }
 
-                val denied = uiState.downloadState as? DownloadState.Denied
-                if (denied != null) {
-                    Surface(
-                        shape = RoundedCornerShape(28.dp),
-                        color = RiptideColors.Surface,
-                        tonalElevation = 0.dp,
-                        shadowElevation = 0.dp,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(20.dp)) {
+                    val waiting = uiState.downloadState as? DownloadState.Waiting
+                    if (waiting != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            CircularProgressIndicator(strokeWidth = 2.dp, color = RiptideColors.Primary, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(12.dp))
                             Text(
-                                text = "DOWNLOAD DECLINED",
-                                color = RiptideColors.Warning,
-                                fontFamily = MonospaceFontFamily,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp,
-                                letterSpacing = 1.3.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                text = "Not approved on PC",
-                                color = RiptideColors.OnSurface,
-                                fontSize = 24.sp,
-                                lineHeight = 32.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = "The PC declined \u201c${denied.filename}\u201d. Ask the owner, then request it again.",
+                                text = "Waiting for the PC to approve \u201c${waiting.filename}\u201d…",
                                 color = RiptideColors.OnSurfaceVariant,
                                 fontSize = 14.sp,
                                 lineHeight = 20.sp
                             )
-                            Spacer(Modifier.height(20.dp))
-                            Button(
-                                onClick = {
-                                    viewModel.clearDownloadDenied()
-                                    downloadPrefill = denied.filename
-                                    showDownloadDialog = true
-                                },
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                                shape = RoundedCornerShape(28.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
-                            ) { Text("Request again", fontSize = 16.sp, fontWeight = FontWeight.Medium) }
                         }
+                        Spacer(Modifier.height(16.dp))
+                    }
+
+                    ActiveTransferHero(
+                        activeTransfer = uiState.activeTransfer,
+                        busyPhase = uiState.busyPhase,
+                        receiveFolderName = uiState.receiveFolderName,
+                        onCancel = { showCancelConfirm = true }
+                    )
+                    uiState.sessionError?.let { err ->
+                        Spacer(Modifier.height(12.dp))
+                        Text(text = err, color = RiptideColors.Error, fontSize = 14.sp, lineHeight = 20.sp)
                     }
                     Spacer(Modifier.height(20.dp))
                 }
-
-                val waiting = uiState.downloadState as? DownloadState.Waiting
-                if (waiting != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                        CircularProgressIndicator(strokeWidth = 2.dp, color = RiptideColors.Primary, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            text = "Waiting for the PC to approve \u201c${waiting.filename}\u201d…",
-                            color = RiptideColors.OnSurfaceVariant,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp
-                        )
-                    }
-                    Spacer(Modifier.height(16.dp))
-                }
-
-                ActiveTransferHero(
-                    activeTransfer = uiState.activeTransfer,
-                    busyPhase = uiState.busyPhase,
-                    onCancel = { showCancelConfirm = true }
-                )
-                uiState.sessionError?.let { err ->
-                    Spacer(Modifier.height(12.dp))
-                    Text(text = err, color = RiptideColors.Error, fontSize = 14.sp, lineHeight = 20.sp)
-                }
-                Spacer(Modifier.height(20.dp))
-                SessionHistoryFeed(records = uiState.transferHistory)
+                SessionHistoryFeed(records = uiState.transferHistory, disconnected = uiState.showInterrupted)
+                // The tip is the last item of the scrolling body, not a
+                // fixed footer: 24 dp above, 24 dp trailing padding
+                // below, moving with the list.
+                Spacer(Modifier.height(24.dp))
+                BottomInfoPanel(message = "Interrupted transfers restart from the beginning.")
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -387,13 +406,45 @@ fun SessionScreen(
                 shape = RoundedCornerShape(28.dp)
             )
         }
+        // The receive folder lost access after a file was verified. The
+        // file waits until the user picks a folder or falls back to the
+        // default; the ack and history wait for that choice.
+        val pending = uiState.pendingReceive
+        if (pending != null) {
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text("Receive folder unavailable", color = RiptideColors.OnSurface) },
+                text = {
+                    Text(
+                        "“${pending.name}” was received, but the folder can no longer be opened. Choose a folder or use the default, and the file will be saved.",
+                        color = RiptideColors.OnSurfaceVariant
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { viewModel.resolvePendingReceiveUseDefault() },
+                        shape = RoundedCornerShape(28.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
+                    ) { Text("Use default folder") }
+                },
+                dismissButton = {
+                    Button(
+                        onClick = { onPickReceiveFolder() },
+                        shape = RoundedCornerShape(28.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface)
+                    ) { Text("Choose folder") }
+                },
+                containerColor = RiptideColors.Surface,
+                shape = RoundedCornerShape(28.dp)
+            )
+        }
     }
 }
 
-/** Peer name, host and live status for the compact Session header. */
+/** Peer name and host/IP for the compact Session header. The status
+ * line is a separate row below the header, outside the alignment. */
 @Composable
-private fun PeerHeaderDetails(peerName: String, peerHost: String, connected: Boolean, modifier: Modifier = Modifier) {
-    val statusColor = if (connected) RiptideColors.Success else RiptideColors.Error
+private fun PeerNameIp(peerName: String, peerHost: String, modifier: Modifier = Modifier) {
     Column(modifier = modifier) {
         Text(
             text = peerName,
@@ -407,24 +458,30 @@ private fun PeerHeaderDetails(peerName: String, peerHost: String, connected: Boo
             text = peerHost,
             color = RiptideColors.OnSurfaceVariant,
             fontFamily = FontFamily.Monospace,
-            fontSize = 14.sp,
-            lineHeight = 20.sp
+            fontSize = 15.sp,
+            lineHeight = 22.sp
         )
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(6.dp).background(statusColor, CircleShape))
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = if (connected) "Connected" else "Disconnected",
-                color = statusColor,
-                fontSize = 13.sp,
-                lineHeight = 18.sp
-            )
-        }
     }
 }
 
-/** Contained tonal Disconnect button for the compact Session header. */
+/** Connection dot and label, on its own line below the header row. */
+@Composable
+private fun StatusRow(connected: Boolean, modifier: Modifier = Modifier) {
+    val statusColor = if (connected) RiptideColors.Success else RiptideColors.Error
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
+        Box(modifier = Modifier.size(6.dp).background(statusColor, CircleShape))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = if (connected) "Connected" else "Disconnected",
+            color = statusColor,
+            fontSize = 13.sp,
+            lineHeight = 18.sp
+        )
+    }
+}
+
+/** Contained tonal Disconnect button for the compact Session header.
+ * Coral power glyph, off-white label. */
 @Composable
 private fun DisconnectButton(peerName: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Button(
@@ -433,13 +490,14 @@ private fun DisconnectButton(peerName: String, onClick: () -> Unit, modifier: Mo
             contentDescription = "Disconnect from $peerName"
         },
         shape = RoundedCornerShape(24.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.Error),
+        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
     ) {
         Icon(
             painter = painterResource(R.drawable.riptide_power),
             contentDescription = null,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(20.dp),
+            tint = RiptideColors.Error
         )
         Spacer(Modifier.width(8.dp))
         Text("Disconnect", fontSize = 14.sp, fontWeight = FontWeight.Medium)

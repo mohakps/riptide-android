@@ -41,6 +41,41 @@ class IdentityManager(private val context: Context? = null) {
     fun fingerprint(): String = certFingerprint(certDer())
     fun code(): String = derive6DigitCode(fingerprint())
 
+    /** Regenerate the identity: a fresh keypair and certificate, so the
+     * phone gets a new fingerprint and previously connected devices
+     * must verify it again. The new cert is written via a temp file and
+     * an atomic rename, so the stored cert is never half-written. On
+     * failure the prior identity is restored from the snapshot and
+     * false is returned; the caller keeps using the old identity. */
+    fun reset(): Boolean {
+        val oldDer = try { certDer() } catch (_: Exception) { null }
+        val certFile = context?.let { File(it.filesDir, "identity.crt") }
+        memoryKeyPair = null
+        memoryCertDer = null
+        return try {
+            val (_, der) = generate()
+            if (certFile != null) {
+                val tmp = File(certFile.parentFile, "identity.crt.tmp")
+                try {
+                    tmp.writeBytes(derToPem(der, "CERTIFICATE"))
+                    if (!tmp.renameTo(certFile)) {
+                        certFile.writeBytes(derToPem(der, "CERTIFICATE"))
+                    }
+                } catch (_: Exception) {
+                    certFile.writeBytes(derToPem(der, "CERTIFICATE"))
+                }
+            }
+            true
+        } catch (_: Exception) {
+            memoryKeyPair = null
+            memoryCertDer = null
+            if (certFile != null && oldDer != null) {
+                try { certFile.writeBytes(derToPem(oldDer, "CERTIFICATE")) } catch (_: Exception) {}
+            }
+            false
+        }
+    }
+
     fun signNonce(nonce: ByteArray): ByteArray {
         val key = privateKey()
         val sig = Signature.getInstance("SHA256withRSA")

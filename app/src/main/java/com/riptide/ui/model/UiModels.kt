@@ -1,5 +1,6 @@
 package com.riptide.ui.model
 
+import com.riptide.core.SessionManager
 enum class TrustStatus { KNOWN, NEW, CHANGED }
 enum class TransferDirection { SEND, RECEIVE }
 enum class TransferStatus { SUCCESS, FAILED, CANCELLED }
@@ -74,5 +75,12 @@ data class SessionUiState(
     val downloadState: DownloadState = DownloadState.Idle,
     /** True when a live session was lost with a transfer unfinished. */
     val showInterrupted: Boolean = false,
+    /** True when the connection was lost while a transfer was actually
+     * in progress. False for an idle disconnect. */
+    val interruptedTransfer: Boolean = false,
+    /** Display name of the current receive folder, for the ready panel. */
+    val receiveFolderName: String = "Downloads/Riptide",
+    /** A verified file waiting for the folder-recovery choice. */
+    val pendingReceive: SessionManager.PendingReceive? = null,
     val sessionError: String? = null
 )

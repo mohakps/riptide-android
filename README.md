@@ -2,6 +2,49 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.5: Tier 2 phone disconnect fix, Session corrections, Settings
+
+- Tier 2 phone side of the disconnect fix: disconnect() is
+  fire-and-forget, and its cleanup used to close whatever socket the
+  shared field held and reset the state to IDLE. A rejoin tapped in
+  the same instant could have its new socket closed and its CONNECTED
+  state clobbered by the old cleanup. The cleanup now owns only what
+  it captured at tap time (socket, reader and heartbeat jobs) and
+  resets the state only when no new connect started since the tap.
+  The PC side (bye fix v1.3.2 and rejoin fix v1.3.3) is already
+  released; this is the matching phone hardening.
+- Session header: Disconnect is now centered against the combined
+  name/IP block, with the status dot and label on a separate line 8 dp
+  below the header row, outside the alignment. The IP is 15/22 sp
+  monospace. The Disconnect label is off-white with a coral power
+  glyph. The button only shows while connected.
+- One session state at a time, from the same state as the header.
+  Connected idle shows "Make the move." (with the live receive folder
+  name), a transfer shows the active panel, and a loss shows
+  "Connection lost" with Back to Join and hides the send/download
+  controls and any stale busy text. The interrupted-transfer copy
+  ("The file was not completed...") only appears when a transfer
+  actually stopped; an idle loss says "Reconnect to send or receive
+  files." Completed session history stays visible.
+- The info panels moved from the fixed footer into the scrolling
+  body, as the last item after the history or device list, with 24 dp
+  above and 24 dp trailing padding below. They move with the list.
+- Settings is rebuilt as one scrollable column: Device, Storage,
+  Identity, About, Diagnostics. Device name edits through a dialog
+  (blank rejected); the fingerprint is untouched by a rename.
+  Receive folder is a system folder picker with persisted access;
+  the choice is saved only after a writable check, and Downloads/
+  Riptide stays the default. A receive that finds its folder
+  inaccessible waits for the user to Choose folder or Use default
+  folder instead of failing. Identity shows the live code (29/36 sp
+  monospace) and a Reset identity action that regenerates the
+  fingerprint (disabled during a session, rechecked at confirmation,
+  serialized with the hello exchange). About reads the installed
+  version and links to the GitHub repository. Diagnostics keeps the
+  log share, now opening the system share sheet.
+- New icons in the existing stroke style: folder, pencil, reset,
+  external link, share.
+
 ## v0.4: MainThread fix, Session polish, bottom info panels, icon padding
 
 - Root cause of the background disconnect, found from the v0.3.4
@@ -263,6 +306,14 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.5 release APK
+
+- `app-release.apk`, 47 MB, versionCode 12, versionName 0.5, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `d51fec0cfebc943620633f204243d9ba5e407954cdd947e80f6d3bc8e2df4cc4`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2/v0.3.3/v0.3.4/v0.4, installs as an update).
+- Tier 2 phone disconnect fix, Session corrections, and the Settings
+  rebuild from the v0.5 design update.
 
 ## v0.4 release APK
 
