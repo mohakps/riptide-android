@@ -24,14 +24,13 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +38,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.R
+import com.riptide.ui.components.ConfirmationSheet
 import com.riptide.ui.model.DownloadState
 import com.riptide.ui.theme.MonospaceFontFamily
 import com.riptide.ui.theme.RiptideColors
@@ -64,38 +66,52 @@ fun SessionScreen(
     onDisconnect: () -> Unit,
     onBackToJoin: () -> Unit,
     modifier: Modifier = Modifier,
-    onPickReceiveFolder: () -> Unit = {}
+    onPickReceiveFolder: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var showDownloadDialog by remember { mutableStateOf(false) }
     var downloadPrefill by remember { mutableStateOf("") }
     var showCancelConfirm by remember { mutableStateOf(false) }
     var showCancelBatchConfirm by remember { mutableStateOf(false) }
-    var showDisconnectConfirm by remember { mutableStateOf(false) }
-    var overflowOpen by remember { mutableStateOf(false) }
+    var showDisconnectSheet by remember { mutableStateOf(false) }
+    // Focus returns to the Disconnect trigger when the sheet is
+    // cancelled (Cancel, Back, outside tap, swipe). The flag keeps a
+    // confirm from sending focus back to a trigger that is going away.
+    val disconnectTriggerFocus = remember { FocusRequester() }
+    var disconnectFocusReturnPending by remember { mutableStateOf(false) }
+    LaunchedEffect(showDisconnectSheet) {
+        if (!showDisconnectSheet && disconnectFocusReturnPending) {
+            disconnectFocusReturnPending = false
+            disconnectTriggerFocus.requestFocus()
+        }
+    }
     // The same live state drives the app-bar status, the header and
     // the body, so the status appears exactly once.
     val connected = !uiState.showInterrupted
+    // If the session ends while the Disconnect sheet is open (the PC
+    // drops, the socket dies), dismiss the sheet so the Session screen
+    // shows its actual connection state instead of a stale confirm.
+    LaunchedEffect(uiState.isConnected, uiState.showInterrupted) {
+        if (showDisconnectSheet && (!uiState.isConnected || uiState.showInterrupted)) {
+            showDisconnectSheet = false
+        }
+    }
 
     Scaffold(
         topBar = {
             // A custom bar, not TopAppBar: the two-line title (Session
             // plus the status dot and label) must let the bar grow at
             // large font sizes instead of clipping in a fixed 64 dp.
+            // No back arrow: Session is a tab, not a pushed screen.
+            // The title and status start at the 24 dp page gutter,
+            // with the dot's left edge aligned to the title; the
+            // Settings gear (same as Transfer) sits at the right.
             Row(
                 modifier = Modifier.fillMaxWidth().statusBarsPadding()
-                    .heightIn(min = 64.dp).padding(horizontal = 4.dp, vertical = 6.dp),
+                    .heightIn(min = 64.dp).padding(horizontal = 24.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { showDisconnectConfirm = true }, modifier = Modifier.size(48.dp)) {
-                    Icon(
-                        painter = painterResource(R.drawable.riptide_back),
-                        contentDescription = "Back",
-                        modifier = Modifier.size(24.dp),
-                        tint = RiptideColors.OnSurface
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Session",
@@ -119,21 +135,13 @@ fun SessionScreen(
                         )
                     }
                 }
-                Box {
-                    IconButton(onClick = { overflowOpen = true }, modifier = Modifier.size(48.dp)) {
-                        Icon(
-                            painter = painterResource(R.drawable.riptide_more),
-                            contentDescription = "More options",
-                            modifier = Modifier.size(24.dp),
-                            tint = RiptideColors.OnSurface
-                        )
-                    }
-                    DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Disconnect", color = RiptideColors.OnSurface) },
-                            onClick = { overflowOpen = false; showDisconnectConfirm = true }
-                        )
-                    }
+                IconButton(onClick = onNavigateToSettings, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        painter = painterResource(R.drawable.riptide_settings),
+                        contentDescription = "Open Settings",
+                        modifier = Modifier.size(24.dp),
+                        tint = RiptideColors.OnSurface
+                    )
                 }
             }
         },
@@ -162,7 +170,7 @@ fun SessionScreen(
                                 modifier = Modifier.weight(1f).heightIn(min = 56.dp),
                                 shape = RoundedCornerShape(28.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
-                            ) { Text("Send file", fontSize = 16.sp, fontWeight = FontWeight.Medium) }
+                            ) { Text("Send files", fontSize = 16.sp, fontWeight = FontWeight.Medium) }
                             Button(
                                 onClick = { downloadPrefill = ""; showDownloadDialog = true },
                                 modifier = Modifier.weight(1f).heightIn(min = 56.dp),
@@ -199,7 +207,11 @@ fun SessionScreen(
                     if (connected) {
                         Spacer(Modifier.height(12.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            DisconnectButton(peerName = peerName, onClick = { showDisconnectConfirm = true })
+                            DisconnectButton(
+                                peerName = peerName,
+                                onClick = { showDisconnectSheet = true },
+                                modifier = Modifier.focusRequester(disconnectTriggerFocus)
+                            )
                         }
                     }
                 } else {
@@ -211,7 +223,11 @@ fun SessionScreen(
                         )
                         if (connected) {
                             Spacer(Modifier.width(16.dp))
-                            DisconnectButton(peerName = peerName, onClick = { showDisconnectConfirm = true })
+                            DisconnectButton(
+                                peerName = peerName,
+                                onClick = { showDisconnectSheet = true },
+                                modifier = Modifier.focusRequester(disconnectTriggerFocus)
+                            )
                         }
                     }
                 }
@@ -442,34 +458,16 @@ fun SessionScreen(
                 shape = RoundedCornerShape(28.dp)
             )
         }
-        if (showDisconnectConfirm) {
-            val hasActive = uiState.activeTransfer != null || uiState.busyPhase != null
-            AlertDialog(
-                onDismissRequest = { showDisconnectConfirm = false },
-                title = { Text("Disconnect from ${uiState.peerName.ifBlank { "this PC" }}?", color = RiptideColors.OnSurface) },
-                text = {
-                    Text(
-                        if (hasActive) "A transfer is in progress. Disconnecting ends it, and the file must restart."
-                        else "You can reconnect from Transfer whenever you like.",
-                        color = RiptideColors.OnSurfaceVariant
-                    )
-                },
-                confirmButton = {
-                    Button(
-                        onClick = { showDisconnectConfirm = false; viewModel.onDisconnect(onDisconnect) },
-                        shape = RoundedCornerShape(28.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
-                    ) { Text("Disconnect") }
-                },
-                dismissButton = {
-                    Button(
-                        onClick = { showDisconnectConfirm = false },
-                        shape = RoundedCornerShape(28.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface)
-                    ) { Text("Cancel") }
-                },
-                containerColor = RiptideColors.Surface,
-                shape = RoundedCornerShape(28.dp)
+        if (showDisconnectSheet) {
+            val hasActive = uiState.activeTransfer != null || uiState.busyPhase != null || uiState.batchState != null
+            ConfirmationSheet(
+                iconRes = R.drawable.riptide_power,
+                title = "Disconnect from ${uiState.peerName.ifBlank { "this PC" }}?",
+                body = if (hasActive) "A transfer is in progress. Disconnecting ends it, and the file must restart."
+                    else "You can reconnect from Transfer whenever you like.",
+                confirmLabel = "Disconnect",
+                onConfirm = { showDisconnectSheet = false; viewModel.onDisconnect(onDisconnect) },
+                onDismiss = { disconnectFocusReturnPending = true; showDisconnectSheet = false }
             )
         }
         // The receive folder lost access after a file was verified. The

@@ -261,6 +261,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onDisconnect = { /* already on Transfer; IDLE shows Home */ },
                             onBackToJoin = { currentTab = RiptideTab.Transfer },
+                            onNavigateToSettings = ::openSettings,
                             modifier = contentModifier
                         )
                         else -> HomeScreen(

@@ -36,4 +36,10 @@ object RiptideColors {
      * advances across it with that file's bytes. */
     val BatchRowBase = Color(0xFF352628)
     val BatchRowFill = Color(0xFF563438)
+    /** Session history: soft blue for Received (arrow and status),
+     * softer off-white for filenames, muted for the separator and
+     * file size in the subtitle. */
+    val ReceivedBlue = Color(0xFF8AB4F8)
+    val HistoryFilename = Color(0xFFD5D2CC)
+    val HistoryMuted = Color(0xFFA8A6A1)
 }

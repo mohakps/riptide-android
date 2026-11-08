@@ -124,13 +124,6 @@ fun ActiveTransferHero(
                         fontSize = 14.sp,
                         lineHeight = 20.sp
                     )
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        text = "One file at a time.",
-                        color = RiptideColors.OnSurfaceVariant,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp
-                    )
                 }
                 else -> {
                     val animatedProgress by animateFloatAsState(targetValue = activeTransfer.progress, label = "progress")

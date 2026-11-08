@@ -2,6 +2,45 @@
 
 Native Android client for Riptide, Join only, wire compatible with Riptide PC v1.3.
 
+## v0.8: confirmation sheets, Session app bar, history restyle
+
+- Confirmation sheets: Disconnect and Reset identity are now modal
+  bottom sheets instead of centered popups, sharing one component
+  built on the Show fingerprint sheet (charcoal #1C1C1C, 28 dp top
+  corners, drag handle, backdrop scrim, opens fully on first render).
+  A 24 dp coral outline icon, a 26/32 sp title and muted 15/22 sp
+  body share one start edge in 24 dp padding; two full-width pill
+  buttons stack below (coral confirm first, tonal Cancel second),
+  min 48 dp, 8 dp apart, 12 dp after Cancel inside the navigation
+  inset. The icon and text scroll while the actions stay visible on
+  short screens and large text. Cancel, Back, outside tap and swipe
+  dismiss without confirming; the title is a heading for screen
+  readers and focus returns to the trigger on cancel. Disconnect
+  keeps its interruption warning when a transfer or batch is active,
+  and dismisses itself if the session ends while it is open. Reset
+  keeps its eligibility (disconnected only) and its cannot-dismiss
+  guard while a reset is running.
+- Session app bar: no back arrow. Session and the connection status
+  start at the 24 dp page gutter with the dot's left edge aligned to
+  the title. The overflow menu is replaced by the same outlined
+  Settings gear used on Transfer (24 dp, "Open Settings"), which
+  opens Settings and returns to Session. System Back on Session is
+  unchanged.
+- Ready card: "One file at a time." is gone; the card ends at its
+  normal bottom padding after the receive-folder copy.
+- Session action renamed from "Send file" to "Send files". It opens
+  the existing multiple-file picker; one selection is the single-file
+  flow, several are the batch flow.
+- Transfer history: "THIS SESSION" is now 14/20 sp. Sent rows use
+  green #78DC8C for the arrow and status, Received rows use soft blue
+  #8AB4F8; filenames are softer off-white #D5D2CC at 16/22 sp medium.
+  The arrow (20 dp) is centered against the filename and subtitle
+  block. The subtitle shows only the status and size ("Sent ·
+  130.2 KB"), the separator and size in muted #A8A6A1. Failed and
+  cancelled rows keep their muted styling and name the outcome
+  ("Failed · 130.2 KB") instead of the direction. The SHA-256
+  verified note is gone from the history display.
+
 ## v0.7.1: active-row fill fix
 
 - The active file row in the expanded batch details now actually
@@ -412,6 +451,13 @@ On this build machine the wrapper was used with a local Gradle 8.7 install
 and the `preferIPv4Stack` fix in `gradle.properties`.
 
 The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
+
+## v0.8 release APK
+
+- `app-release.apk`, 47 MB, versionCode 17, versionName 0.8, package `com.riptide`, min SDK 29, target SDK 34.
+- SHA-256: `3c2e95df25723b4494e6edddda33f36851a43d489b794654141c141d6f40f7c3`
+- Signed with APK Signature Scheme v2, 1 signer, RSA-2048, certificate DN `CN=riptide, OU=Riptide, O=Riptide`, certificate SHA-256 `c7b6448578a36cb9b7bf6f393573fe5baaa3680000f81a2a56b6ad4681c3d0c6` (same key as v0.1/v0.1.1/v0.2/v0.2.1/v0.3.2/v0.3.3/v0.3.4/v0.4/v0.5/v0.5.1/v0.6/v0.7/v0.7.1, installs as an update).
+- Confirmation sheets, Session app bar, ready card, Send files rename, history restyle.
 
 ## v0.7.1 release APK
 

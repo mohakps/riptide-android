@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +42,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -54,6 +57,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.R
+import com.riptide.ui.components.ConfirmationSheet
 import com.riptide.ui.theme.MonospaceFontFamily
 import com.riptide.ui.theme.RiptideColors
 
@@ -82,6 +86,17 @@ fun SettingsScreen(
     var showRename by remember { mutableStateOf(false) }
     var showResetConfirm by remember { mutableStateOf(false) }
     var resetting by remember { mutableStateOf(false) }
+    // Focus returns to the Reset identity row when the sheet is
+    // cancelled (Cancel, Back, outside tap, swipe). The flag keeps a
+    // confirmed reset from sending focus back to the row.
+    val resetTriggerFocus = remember { FocusRequester() }
+    var resetFocusReturnPending by remember { mutableStateOf(false) }
+    LaunchedEffect(showResetConfirm) {
+        if (!showResetConfirm && resetFocusReturnPending) {
+            resetFocusReturnPending = false
+            resetTriggerFocus.requestFocus()
+        }
+    }
     val context = LocalContext.current
     val versionName = remember {
         try {
@@ -299,6 +314,7 @@ fun SettingsScreen(
                             onClick = { showResetConfirm = true },
                             contentDescription = "Reset identity",
                             enabled = canReset,
+                            modifier = Modifier.focusRequester(resetTriggerFocus),
                             leadingIcon = {
                                 Icon(
                                     painter = painterResource(R.drawable.riptide_reset),
@@ -502,47 +518,25 @@ fun SettingsScreen(
     }
 
     if (showResetConfirm) {
-        AlertDialog(
-            onDismissRequest = { if (!resetting) showResetConfirm = false },
-            icon = {
-                Icon(
-                    painter = painterResource(R.drawable.riptide_reset),
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = RiptideColors.Error
-                )
+        // The warning is the sheet body, so it is visible before the
+        // confirm action at standard text size. While a reset is
+        // running the sheet cannot be dismissed and both buttons are
+        // disabled, as before.
+        ConfirmationSheet(
+            iconRes = R.drawable.riptide_reset,
+            title = "Reset this device’s identity?",
+            body = "This creates a new fingerprint. Previously connected devices will need to verify your fingerprint again.",
+            confirmLabel = "Reset identity",
+            onConfirm = {
+                resetting = true
+                viewModel.resetIdentity { ok ->
+                    resetting = false
+                    if (ok) showResetConfirm = false
+                }
             },
-            title = { Text("Reset this device’s identity?", color = RiptideColors.OnSurface) },
-            text = {
-                Text(
-                    "This creates a new fingerprint. Previously connected devices will need to verify your fingerprint again.",
-                    color = RiptideColors.OnSurfaceVariant
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        resetting = true
-                        viewModel.resetIdentity { ok ->
-                            resetting = false
-                            if (ok) showResetConfirm = false
-                        }
-                    },
-                    enabled = !resetting,
-                    shape = RoundedCornerShape(28.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
-                ) { Text("Reset identity") }
-            },
-            dismissButton = {
-                Button(
-                    onClick = { showResetConfirm = false },
-                    enabled = !resetting,
-                    shape = RoundedCornerShape(28.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface)
-                ) { Text("Cancel") }
-            },
-            containerColor = RiptideColors.Surface,
-            shape = RoundedCornerShape(28.dp)
+            onDismiss = { if (!resetting) { resetFocusReturnPending = true; showResetConfirm = false } },
+            confirmEnabled = !resetting,
+            dismissEnabled = !resetting
         )
     }
 }

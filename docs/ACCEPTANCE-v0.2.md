@@ -724,3 +724,66 @@ Fixes in v0.2.1 (versionCode 4):
   files, expand details mid-batch, and confirm the active row fills
   with #563438 from the leading edge in proportion to that file's
   bytes while the other rows stay unfilled.
+
+## v0.8 addendum (confirmation sheets, Session app bar, history restyle, 2026-11-09)
+
+- Confirmation sheets: Disconnect and Reset identity are ModalBottom
+  sheets sharing a new ConfirmationSheet component (ui/components),
+  built on the Show fingerprint sheet and the first-connection sheet
+  pattern: skipPartiallyExpanded so each opens fully, charcoal
+  #1C1C1C surface, 28 dp top corners, drag handle and scrim from
+  ModalBottomSheet, 24 dp horizontal padding, 24 dp coral outline
+  icon, 26/32 sp title (heading semantics), muted 15/22 sp body,
+  two full-width pill buttons (coral confirm, tonal Cancel) at min
+  48 dp with 8 dp between and 12 dp after Cancel, the navigation
+  inset applied once by the sheet. The icon and text scroll (weight
+  1f, fill false) while the actions stay pinned. Cancel, Back,
+  outside tap and swipe all dismiss without confirming; focus returns
+  to the trigger on cancel (FocusRequester + a pending flag, so a
+  confirm never sends focus back). Disconnect uses the power icon and
+  the current peer name, keeps the interruption warning when a
+  transfer or batch is active (batchState now counts), and dismisses
+  itself via a LaunchedEffect if the session ends while it is open.
+  Reset uses the reset arrow, keeps the canReset eligibility (the row
+  is disabled while connected) and the cannot-dismiss guard while a
+  reset runs.
+- Session app bar: the back arrow and overflow menu are gone. The
+  title and status start at the 24 dp page gutter (the bar's
+  horizontal padding is 24 dp), the status dot's left edge aligns to
+  the title, and the gear is the same riptide_settings icon as
+  Transfer (24 dp in a 48 dp target, "Open Settings"), wired to
+  MainActivity openSettings so leaving Settings returns to the live
+  Session. System Back on Session is unchanged (the activity
+  BackHandler still finishes).
+- Ready card: the "One file at a time." line and its 16 dp spacer
+  are removed from ActiveTransferHero; the card ends at its 20 dp
+  bottom padding after the receive-folder copy.
+- Send files: the Session bottom-bar label changed from "Send file"
+  to "Send files". The picker is already OpenMultipleDocuments (v0.7),
+  so one selection is the single-file flow and several are the batch
+  flow; no picker change was needed.
+- Transfer history: "THIS SESSION" is 14/20 sp (was 12/16). Rows use
+  CenterVertically so the 20 dp arrow (was 24 dp) centers against the
+  filename + subtitle block. Filenames are #D5D2CC at 16/22 sp medium
+  (was #F2F0EB at 17/24 sp). The subtitle is an AnnotatedString with
+  only the status and size: Sent in green #78DC8C / Received in soft
+  blue #8AB4F8 (new ReceivedBlue), separator and size in muted
+  #A8A6A1 (new HistoryMuted). Failed and cancelled rows name the
+  outcome ("Failed · 130.2 KB") in the existing muted styling instead
+  of the direction, so they never read as a success; their arrows
+  still show the direction. The "SHA-256 verified" note and its
+  separator are gone. The rename line is unchanged. No unit test
+  covers the row rendering (Compose UI); the 42 existing unit tests
+  are unaffected.
+- Build evidence: compile, 42/42 unit tests, lint 0 errors 20
+  warnings, assembleRelease — BUILD SUCCESSFUL. Release APK 47 MB,
+  versionCode 17, versionName 0.8, SHA-256
+  3c2e95df25723b4494e6edddda33f36851a43d489b794654141c141d6f40f7c3, same
+  signing cert c7b64485 (installs as an update).
+- Live phone checks are the user's step: the six items in the v0.8
+  brief (both sheets vs Show fingerprint; gesture and three-button
+  navigation, short screen, long peer name, enlarged text; dismiss
+  each sheet four ways then confirm once; ready card and history
+  colours after a send and a receive, including a long wrapping
+  filename; app bar in connected and disconnected states, gear to
+  Settings and back; "Send files" with one file then several).
