@@ -343,19 +343,37 @@ fun copyTextFor(address: String): String =
 
 /** Addresses this phone can offer as a host (C1-C4). Mobile data
  * offers global IPv6 only; Wi-Fi offers global IPv6 plus LAN IPv4.
- * Public IPv4 is a separate Advanced lookup, never part of this. */
+ * Public IPv4 is a separate Advanced lookup, never part of this.
+ * The active network's own addresses are the source: on Wi-Fi with
+ * no IPv6, the cellular interface's global IPv6 (still present in
+ * the all-interfaces list) must NOT be shown. The interface list
+ * is only a fallback for when the active network's properties are
+ * unavailable (activeAddresses == null), never a supplement. The
+ * same rule covers LAN IPv4: a VPN or tether interface's site-local
+ * address in the interface list must not win over the Wi-Fi LAN
+ * address. */
 data class HostAddresses(val globalIPv6: String?, val lanIPv4: String?)
 
-fun selectHostAddresses(addresses: List<InetAddress>, transport: NetworkTransport): HostAddresses {
+fun selectHostAddresses(
+    activeAddresses: List<InetAddress>?,
+    interfaceAddresses: List<InetAddress>,
+    transport: NetworkTransport
+): HostAddresses {
     if (transport == NetworkTransport.NONE) return HostAddresses(null, null)
-    val v6 = addresses.firstOrNull { isGlobalIPv6(it) }?.hostAddress?.let { compressIPv6Address(it) }
+    val source = activeAddresses ?: interfaceAddresses
+    val v6 = source.firstOrNull { isGlobalIPv6(it) }?.hostAddress?.let { compressIPv6Address(it) }
     val v4 = if (transport == NetworkTransport.WIFI) {
-        addresses.firstOrNull { isLanIPv4(it) }?.hostAddress
+        source.firstOrNull { isLanIPv4(it) }?.hostAddress
     } else {
         null
     }
     return HostAddresses(v6, v4)
 }
+
+/** Overload for callers without an active-network read: the
+ * interface list is the only source. */
+fun selectHostAddresses(addresses: List<InetAddress>, transport: NetworkTransport): HostAddresses =
+    selectHostAddresses(null, addresses, transport)
 
 /** Which host state the current network is in (C1/C2/C3/C4/C6). */
 enum class HostPhase { WAITING, MOBILE_V4_ONLY, OFFLINE }

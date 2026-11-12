@@ -18,11 +18,16 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Live network state for Join validation (J1) and Create Server (C1-C8).
  * Capability is read from the active network's link properties, so it
- * follows the network the device is actually on; local addresses come
- * from the network interfaces. A NetworkCallback refreshes all three
- * flows when the network changes, so Join re-validates and the host
- * re-detects addresses without any polling. The callback is registered
- * once, on the main thread, and lives for the process lifetime.
+ * follows the network the device is actually on. The displayed host
+ * addresses come from the SAME source: the active network's link
+ * properties (activeNetworkAddresses), so a cellular IPv6 never leaks
+ * onto the Create screen while Wi-Fi is active. The all-interfaces
+ * list (localAddresses) is only a fallback for when the active
+ * network's properties are unavailable. A NetworkCallback refreshes
+ * all flows when the network changes, so Join re-validates and the
+ * host re-detects addresses without any polling. The callback is
+ * registered once, on the main thread, and lives for the process
+ * lifetime.
  */
 class NetworkMonitor(private val context: Context) {
     private val connectivityManager =
@@ -36,6 +41,14 @@ class NetworkMonitor(private val context: Context) {
 
     private val _localAddresses = MutableStateFlow(snapshotLocalAddresses())
     val localAddresses: StateFlow<List<InetAddress>> = _localAddresses.asStateFlow()
+
+    private val _activeNetworkAddresses = MutableStateFlow(snapshotActiveNetworkAddresses())
+    /** Addresses of the ACTIVE network only (its LinkProperties),
+     * or null when the active network or its properties are
+     * unavailable. Unlike localAddresses this never carries the
+     * cellular interface's IPv6 while Wi-Fi is active; an empty
+     * list means the active network genuinely has no addresses. */
+    val activeNetworkAddresses: StateFlow<List<InetAddress>?> = _activeNetworkAddresses.asStateFlow()
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = refresh()
@@ -60,6 +73,7 @@ class NetworkMonitor(private val context: Context) {
             _capability.value = snapshotCapability()
             _transport.value = snapshotTransport()
             _localAddresses.value = snapshotLocalAddresses()
+            _activeNetworkAddresses.value = snapshotActiveNetworkAddresses()
         } catch (e: Exception) {
             DiagLog.log("network", "refresh FAILED: ${e::class.simpleName}: ${e.message}")
         }
@@ -112,5 +126,20 @@ class NetworkMonitor(private val context: Context) {
         } catch (_: Exception) {
             emptyList()
         }
+    }
+
+    /** Addresses of the active network only, from its
+     * LinkProperties. Null when there is no active network or its
+     * properties are unavailable (callers fall back to the
+     * all-interfaces list then); an empty list means the active
+     * network has no addresses, and is trusted as such. */
+    private fun snapshotActiveNetworkAddresses(): List<InetAddress>? {
+        val network = connectivityManager.activeNetwork ?: return null
+        val props = try {
+            connectivityManager.getLinkProperties(network)
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        return props.linkAddresses.map { it.address }
     }
 }

@@ -161,6 +161,7 @@ class HostManager(
     private var clientSocket: SSLSocket? = null
     private var networkJob: Job? = null
     private var addressesJob: Job? = null
+    private var activeAddressesJob: Job? = null
     private var noticeJob: Job? = null
     private var publicFetchJob: Job? = null
     private var approvalDecision: ((Boolean) -> Unit)? = null
@@ -198,6 +199,12 @@ class HostManager(
                 if (hosting) recompute(showNotice = true, restartListener = true)
             }
         }
+        activeAddressesJob?.cancel()
+        activeAddressesJob = scope.launch {
+            networkMonitor.activeNetworkAddresses.collect {
+                if (hosting) recompute(showNotice = true, restartListener = true)
+            }
+        }
         scope.launch { recompute(showNotice = false, restartListener = true) }
     }
 
@@ -216,6 +223,8 @@ class HostManager(
         networkJob = null
         addressesJob?.cancel()
         addressesJob = null
+        activeAddressesJob?.cancel()
+        activeAddressesJob = null
         noticeJob?.cancel()
         publicFetchJob?.cancel()
         TransferService.hostingActive = false
@@ -258,7 +267,14 @@ class HostManager(
      * actually changed. */
     private suspend fun recompute(showNotice: Boolean, restartListener: Boolean) {
         val transport = networkMonitor.transport.value
-        val addresses = selectHostAddresses(networkMonitor.localAddresses.value, transport)
+        // Displayed addresses come from the active network first;
+        // the all-interfaces list is only the fallback when the
+        // active network's properties are unavailable.
+        val addresses = selectHostAddresses(
+            networkMonitor.activeNetworkAddresses.value,
+            networkMonitor.localAddresses.value,
+            transport
+        )
         val phase = hostPhase(transport, addresses)
         val prev = _uiState.value
         val endpointChanged = prev.globalIPv6 != addresses.globalIPv6 ||

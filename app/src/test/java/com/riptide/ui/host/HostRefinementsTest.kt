@@ -10,6 +10,10 @@ import org.junit.Test
  * displayed code verbatim (hyphen included), the Advanced footer
  * buttons share one height, and the requirement bullets align with
  * the first line of text.
+ *
+ * v0.9.4: the two regular address rows share one height (162 dp
+ * minimum), and long IPv6 values break at colon boundaries in the
+ * display string only — Copy and Share still use the full address.
  */
 class HostRefinementsTest {
 
@@ -56,5 +60,32 @@ class HostRefinementsTest {
     fun testBulletTopOffsetNeverNegative() {
         assertEquals(0f, requirementBulletTopOffsetPx(6f, 6f), 0.001f)
         assertEquals(0f, requirementBulletTopOffsetPx(4f, 6f), 0.001f)
+    }
+
+    @Test
+    fun testMatchedRowHeightNeverBelow162() {
+        assertEquals(162.dp, matchedRowHeight(0.dp, 0.dp))
+        assertEquals(162.dp, matchedRowHeight(120.dp, 162.dp))
+        assertEquals(162.dp, matchedRowHeight(162.dp, 162.dp))
+    }
+
+    @Test
+    fun testMatchedRowHeightTakesTaller() {
+        assertEquals(200.dp, matchedRowHeight(200.dp, 162.dp))
+        assertEquals(200.dp, matchedRowHeight(162.dp, 200.dp))
+        assertEquals(220.dp, matchedRowHeight(220.dp, 180.dp))
+    }
+
+    @Test
+    fun testDisplayAddressBreaksAtColons() {
+        val display = displayAddressWithBreaks("2001:db8:7f47:e96:e47e:1cff:fe96:ab5f")
+        // Removing the break opportunities recovers the full
+        // underlying address: Copy and Share use that, never this.
+        assertEquals("2001:db8:7f47:e96:e47e:1cff:fe96:ab5f", display.replace("\u200B", ""))
+        // One break opportunity after every colon (7 colons).
+        assertEquals(7, display.count { it == '\u200B' })
+        // IPv4 has no colons and is unchanged.
+        assertEquals("192.168.1.20", displayAddressWithBreaks("192.168.1.20"))
+        assertEquals("203.0.113.10", displayAddressWithBreaks("203.0.113.10"))
     }
 }

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Connected-node Share glyph (v0.9.4): exact geometry from the
+     approved waiting.svg/advanced.svg — three nodes joined by two
+     lines. White; the Share cell supplies the #E04449 background.
+     The old riptide_share drawable is an upload arrow and is NOT
+     this glyph; do not substitute it here. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+  <path android:pathData="M8.2 10.6L15.8 6.4M8.2 17.6L15.8 21.8" android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" />
+  <path android:pathData="M3.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0" android:fillColor="#FFFFFFFF" />
+  <path android:pathData="M15.5 5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0" android:fillColor="#FFFFFFFF" />
+  <path android:pathData="M15.5 19a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0" android:fillColor="#FFFFFFFF" />
+</vector>

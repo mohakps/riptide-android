@@ -267,6 +267,51 @@ class JoinValidationTest {
     }
 
     @Test
+    fun hostAddressSelectionPrefersActiveNetwork() {
+        val cellV6 = InetAddress.getByName("2401:db00::1")
+        val wifiV6 = InetAddress.getByName("2001:db8::1")
+        val wifiV4 = InetAddress.getByName("192.168.1.20")
+        val vpnV4 = InetAddress.getByName("10.8.0.2")
+
+        // Wi-Fi active with no IPv6: the cellular IPv6 in the
+        // interface list must NOT be shown (the reported bug).
+        assertEquals(
+            HostAddresses(null, "192.168.1.20"),
+            selectHostAddresses(listOf(wifiV4), listOf(cellV6, wifiV4), NetworkTransport.WIFI)
+        )
+        // Wi-Fi active with its own IPv6: the Wi-Fi one wins, not
+        // the cellular one.
+        assertEquals(
+            HostAddresses("2001:db8::1", "192.168.1.20"),
+            selectHostAddresses(listOf(wifiV6, wifiV4), listOf(cellV6, wifiV6, wifiV4), NetworkTransport.WIFI)
+        )
+        // Mobile data active: the cellular IPv6 is shown.
+        assertEquals(
+            HostAddresses("2401:db00::1", null),
+            selectHostAddresses(listOf(cellV6), listOf(cellV6, wifiV4), NetworkTransport.CELLULAR)
+        )
+        // Active network's properties unavailable (null): the
+        // interface list is the fallback, cellular IPv6 shown.
+        assertEquals(
+            HostAddresses("2401:db00::1", "192.168.1.20"),
+            selectHostAddresses(null, listOf(cellV6, wifiV4), NetworkTransport.WIFI)
+        )
+        // LAN IPv4 also comes from the active network: a VPN/tether
+        // site-local address in the interface list must not win
+        // over the Wi-Fi LAN address.
+        assertEquals(
+            HostAddresses(null, "192.168.1.20"),
+            selectHostAddresses(listOf(wifiV4), listOf(vpnV4, wifiV4), NetworkTransport.WIFI)
+        )
+        // An empty active-network list means the active network
+        // genuinely has no addresses: nothing leaks in.
+        assertEquals(
+            HostAddresses(null, null),
+            selectHostAddresses(emptyList(), listOf(cellV6, wifiV4), NetworkTransport.WIFI)
+        )
+    }
+
+    @Test
     fun hostPhases() {
         assertEquals(HostPhase.WAITING, hostPhase(NetworkTransport.WIFI, HostAddresses("2001:db8::1", "192.168.1.20")))
         assertEquals(HostPhase.WAITING, hostPhase(NetworkTransport.WIFI, HostAddresses(null, "192.168.1.20")))
