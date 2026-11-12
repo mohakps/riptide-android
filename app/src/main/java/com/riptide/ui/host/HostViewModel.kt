@@ -34,6 +34,11 @@ class HostViewModel(private val hostManager: HostManager) : ViewModel() {
     /** Bare address for Copy (C4): brackets stripped, port omitted. */
     fun copyTextForAddress(address: String): String = copyTextFor(address)
 
+    /** Clipboard text for the My code tile: the displayed code,
+     * verbatim, hyphen included (e.g. "244-910"). Nothing is
+     * stripped or reformatted. */
+    fun copyTextForCode(code: String): String = copyTextForCodeValue(code)
+
     /** Share link for one address row. */
     fun shareLinkFor(address: String, family: AddressFamily): String =
         buildJoinLink(address, family, deviceName)
@@ -43,3 +48,8 @@ class HostViewModel(private val hostManager: HostManager) : ViewModel() {
         override fun <T : ViewModel> create(modelClass: Class<T>): T = HostViewModel(hostManager) as T
     }
 }
+
+/** Clipboard text for the My code tile: the displayed code,
+ * verbatim, hyphen included (e.g. "244-910"). Pure so the
+ * copy contract is unit-testable without a ViewModel. */
+internal fun copyTextForCodeValue(code: String): String = code

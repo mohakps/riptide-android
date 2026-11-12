@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Radio broadcast (·), exact conversion of the supplied
+     radio-broadcast.svg (24x24 viewBox, #FF6B6B stroke, 1.7 width,
+     round caps/joins): center dot + two outward arcs on each side.
+     The dot is the supplied zero-length path `M12 12h.01` (a 0.01
+     stroked segment with round caps, rendering as a dot of the
+     stroke width); it is kept exactly, not replaced. The relative
+     moves in the source (`m8-8`, `m14-14`) are written as the
+     identical absolute moves (`M16 8`, `M19 5`) — same geometry.
+     Rendered at 36x36 dp on the Create Server waiting header,
+     decorative (contentDescription null). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-  <path android:pathData="M11 19.5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" android:fillColor="#FFF2F0EB" />
-  <path android:pathData="M8 15.5a5.7 5.7 0 0 1 8 0 M4.5 12a10.6 10.6 0 0 1 15 0" android:fillColor="@android:color/transparent" android:strokeColor="#FFF2F0EB" android:strokeWidth="1.7" android:strokeLineCap="round" android:strokeLineJoin="round" />
+  <path android:pathData="M12 12h.01" android:fillColor="@android:color/transparent" android:strokeColor="#FFFF6B6B" android:strokeWidth="1.7" android:strokeLineCap="round" android:strokeLineJoin="round" />
+  <path android:pathData="M8 8a5.7 5.7 0 0 0 0 8M16 8a5.7 5.7 0 0 1 0 8" android:fillColor="@android:color/transparent" android:strokeColor="#FFFF6B6B" android:strokeWidth="1.7" android:strokeLineCap="round" android:strokeLineJoin="round" />
+  <path android:pathData="M5 5a9.9 9.9 0 0 0 0 14M19 5a9.9 9.9 0 0 1 0 14" android:fillColor="@android:color/transparent" android:strokeColor="#FFFF6B6B" android:strokeWidth="1.7" android:strokeLineCap="round" android:strokeLineJoin="round" />
 </vector>
