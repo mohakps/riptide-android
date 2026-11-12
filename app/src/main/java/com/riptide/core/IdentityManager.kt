@@ -5,6 +5,7 @@ import com.riptide.util.certFingerprint
 import com.riptide.util.derive6DigitCode
 import java.io.File
 import java.math.BigInteger
+import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -13,28 +14,50 @@ import java.security.SecureRandom
 import java.security.Signature
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
+import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Calendar
 import java.util.Date
-import javax.security.auth.x500.X500Principal
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.X509v3CertificateBuilder
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
+/**
+ * The phone's identity: an RSA-2048 keypair plus a BouncyCastle
+ * self-signed certificate (CN=riptide, 10 years). The fingerprint is
+ * the SHA-256 of the certificate DER; the 6-digit code is derived
+ * from it. Both peers compare the code out of band before Allow.
+ *
+ * v0.9.2: the key is SOFTWARE-generated and stored as PKCS#8 PEM in
+ * the app-private filesDir (identity.key), next to the certificate
+ * (identity.crt). v0.9/v0.9.1 generated the key in AndroidKeyStore
+ * (PURPOSE_SIGN, PKCS1-only, later PKCS1+PSS) and handed that
+ * non-extractable key to Conscrypt through an in-memory KeyStore;
+ * every host handshake failed with an RSA internal error, on TLS 1.3
+ * and on TLS 1.2, and survived a Reset identity (the new key was
+ * made the same way). A software key has no such restriction: its
+ * encoded form is available, Conscrypt can use it, and TLS 1.3
+ * works. The key file lives in internal storage (private to the
+ * app), the same model as the PC, which stores ~/.riptide/identity.key.
+ */
 class IdentityManager(private val context: Context? = null) {
     private var memoryKeyPair: KeyPair? = null
+    private var memoryPrivateKey: PrivateKey? = null
     private var memoryCertDer: ByteArray? = null
+    private var migrationChecked = false
+
+    private fun certFile(): File? = context?.let { File(it.filesDir, "identity.crt") }
+    private fun keyFile(): File? = context?.let { File(it.filesDir, "identity.key") }
 
     fun certDer(): ByteArray {
         memoryCertDer?.let { return it }
-        val file = context?.let { File(it.filesDir, "identity.crt") }
+        maybeMigrate()
+        val file = certFile()
         if (file != null && file.exists()) {
             return file.readBytes().let { pemToDer(it) }
         }
         val (keyPair, der) = generate()
-        if (file != null) {
-            try { file.writeBytes(derToPem(der, "CERTIFICATE")) } catch (_: Exception) {}
-        }
+        writeIdentityFiles(keyPair, der)
         return der
     }
 
@@ -43,34 +66,31 @@ class IdentityManager(private val context: Context? = null) {
 
     /** Regenerate the identity: a fresh keypair and certificate, so the
      * phone gets a new fingerprint and previously connected devices
-     * must verify it again. The new cert is written via a temp file and
-     * an atomic rename, so the stored cert is never half-written. On
-     * failure the prior identity is restored from the snapshot and
+     * must verify it again. Both files are written via a temp file and
+     * an atomic rename, so the stored identity is never half-written.
+     * On failure the prior identity is restored from the snapshot and
      * false is returned; the caller keeps using the old identity. */
     fun reset(): Boolean {
         val oldDer = try { certDer() } catch (_: Exception) { null }
-        val certFile = context?.let { File(it.filesDir, "identity.crt") }
+        val oldKey = try { keyFile()?.takeIf { it.exists() }?.readBytes() } catch (_: Exception) { null }
         memoryKeyPair = null
+        memoryPrivateKey = null
         memoryCertDer = null
         return try {
-            val (_, der) = generate()
-            if (certFile != null) {
-                val tmp = File(certFile.parentFile, "identity.crt.tmp")
-                try {
-                    tmp.writeBytes(derToPem(der, "CERTIFICATE"))
-                    if (!tmp.renameTo(certFile)) {
-                        certFile.writeBytes(derToPem(der, "CERTIFICATE"))
-                    }
-                } catch (_: Exception) {
-                    certFile.writeBytes(derToPem(der, "CERTIFICATE"))
-                }
-            }
+            val (kp, der) = generate()
+            writeIdentityFiles(kp, der)
             true
         } catch (_: Exception) {
             memoryKeyPair = null
+            memoryPrivateKey = null
             memoryCertDer = null
-            if (certFile != null && oldDer != null) {
-                try { certFile.writeBytes(derToPem(oldDer, "CERTIFICATE")) } catch (_: Exception) {}
+            val cf = certFile()
+            if (cf != null && oldDer != null) {
+                try { writeFileAtomic(cf, derToPem(oldDer, "CERTIFICATE")) } catch (_: Exception) {}
+            }
+            val kf = keyFile()
+            if (kf != null && oldKey != null) {
+                try { writeFileAtomic(kf, oldKey) } catch (_: Exception) {}
             }
             false
         }
@@ -97,17 +117,63 @@ class IdentityManager(private val context: Context? = null) {
         }
     }
 
-    private fun privateKey(): PrivateKey {
-        memoryKeyPair?.let { return it.private }
-        val ks = keyStoreOrNull()
-        if (ks != null) {
-            try {
-                val entry = ks.getEntry("riptide_identity", null) as? KeyStore.PrivateKeyEntry
-                if (entry != null) return entry.privateKey
-            } catch (_: Exception) {}
+    /** The identity private key (a software key; encoded is non-null).
+     * Used by signNonce and by HostManager's TLS context. */
+    internal fun privateKey(): PrivateKey {
+        memoryPrivateKey?.let { return it }
+        memoryKeyPair?.let { return it.private.also { memoryPrivateKey = it } }
+        keyFile()?.let { kf ->
+            if (kf.exists()) {
+                try {
+                    val spec = PKCS8EncodedKeySpec(pemToDer(kf.readBytes()))
+                    val pk = KeyFactory.getInstance("RSA").generatePrivate(spec)
+                    memoryPrivateKey = pk
+                    return pk
+                } catch (_: Exception) {
+                    // Fall through: no usable stored key.
+                }
+            }
         }
-        val (kp, _) = generate()
+        // No stored key (fresh install, or a certificate whose key is
+        // gone): generate a fresh identity and persist it. A stored
+        // certificate without its key is unusable, so regenerating
+        // both is correct; the fingerprint changes once.
+        val (kp, der) = generate()
+        writeIdentityFiles(kp, der)
         return kp.private
+    }
+
+    /**
+     * Pure migration decision, unit-testable: a pre-v0.9.2 identity
+     * (AndroidKeyStore key, certificate file but no identity.key)
+     * must be replaced by a software identity on first use.
+     */
+    internal fun needsMigration(keyFileExists: Boolean, certFileExists: Boolean, keystoreAliasExists: Boolean): Boolean =
+        !keyFileExists && (certFileExists || keystoreAliasExists)
+
+    /**
+     * One-time migration, runs at most once per process: if the
+     * stored identity predates v0.9.2, regenerate it as a software
+     * identity (new fingerprint/code; the laptop sees the phone as
+     * Changed once and must verify the new code out of band). The
+     * AndroidKeyStore entry is left in place (harmless; deleting it
+     * could break a downgrade). After migration the AndroidKeyStore
+     * is never used for the identity again: the only remaining
+     * reference is the read-only alias check in this function.
+     */
+    private fun maybeMigrate() {
+        if (migrationChecked) return
+        migrationChecked = true
+        val kf = keyFile() ?: return
+        val certExists = certFile()?.exists() == true
+        val aliasExists = try {
+            keyStoreOrNull()?.containsAlias("riptide_identity") == true
+        } catch (_: Exception) {
+            false
+        }
+        if (!needsMigration(kf.exists(), certExists, aliasExists)) return
+        DiagLog.log("identity", "migrating AndroidKeyStore identity to software key (new fingerprint)")
+        reset()
     }
 
     private fun keyStoreOrNull(): KeyStore? {
@@ -120,41 +186,39 @@ class IdentityManager(private val context: Context? = null) {
         }
     }
 
+    /** Software keypair, 2048-bit. No AndroidKeyStore: a keystore key
+     * cannot be used by Conscrypt's TLS code (v0.9/v0.9.1). */
     private fun generate(): Pair<KeyPair, ByteArray> {
         memoryKeyPair?.let { kp ->
             memoryCertDer?.let { return kp to it }
         }
-        val ks = keyStoreOrNull()
-        val keyPair: KeyPair
-        if (ks != null && context != null) {
-            val kpg = KeyPairGenerator.getInstance("RSA", "AndroidKeyStore")
-            val spec = android.security.keystore.KeyGenParameterSpec.Builder(
-                "riptide_identity",
-                android.security.keystore.KeyProperties.PURPOSE_SIGN
-            )
-                .setKeySize(2048)
-                .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
-                // PKCS1 is what the current identity uses (TLS 1.2
-                // host handshakes sign with it). PSS is allowed for
-                // identities generated after this change so a future
-                // identity could do TLS 1.3; the existing key is
-                // untouched and its fingerprint/code do not change.
-                .setSignaturePaddings(
-                    android.security.keystore.KeyProperties.SIGNATURE_PADDING_RSA_PKCS1,
-                    android.security.keystore.KeyProperties.SIGNATURE_PADDING_RSA_PSS
-                )
-                .build()
-            kpg.initialize(spec)
-            keyPair = kpg.generateKeyPair()
-        } else {
-            val kpg = KeyPairGenerator.getInstance("RSA")
-            kpg.initialize(2048, SecureRandom())
-            keyPair = kpg.generateKeyPair()
-            memoryKeyPair = keyPair
-        }
+        val kpg = KeyPairGenerator.getInstance("RSA")
+        kpg.initialize(2048, SecureRandom())
+        val keyPair = kpg.generateKeyPair()
+        memoryKeyPair = keyPair
+        memoryPrivateKey = keyPair.private
         val der = buildSelfSignedCert(keyPair)
         memoryCertDer = der
         return keyPair to der
+    }
+
+    /** Persist both identity files (temp file + atomic rename each). */
+    private fun writeIdentityFiles(keyPair: KeyPair, der: ByteArray) {
+        val cf = certFile() ?: return
+        val kf = keyFile() ?: return
+        try { writeFileAtomic(cf, derToPem(der, "CERTIFICATE")) } catch (_: Exception) {}
+        val encoded = keyPair.private.encoded ?: return
+        try { writeFileAtomic(kf, derToPem(encoded, "PRIVATE KEY")) } catch (_: Exception) {}
+    }
+
+    private fun writeFileAtomic(file: File, bytes: ByteArray) {
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        try {
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(file)) file.writeBytes(bytes)
+        } catch (_: Exception) {
+            file.writeBytes(bytes)
+        }
     }
 
     fun buildSelfSignedCert(keyPair: KeyPair): ByteArray {

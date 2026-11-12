@@ -44,17 +44,29 @@ import javax.net.ssl.HttpsURLConnection
 private const val NETWORK_CHANGED_NOTICE_MS = 4000L
 
 /**
- * TLS versions the host listener offers. TLS 1.2 only: the
- * AndroidKeyStore identity key signs RSA-PKCS1 only (PURPOSE_SIGN +
- * SIGNATURE_PADDING_RSA_PKCS1), and TLS 1.3 requires RSA-PSS for the
- * server CertificateVerify, which this key cannot do. A Python
- * TLS 1.3 client (the PC joiner) failed the handshake against a
- * TLS 1.3 listener for exactly this reason (v0.9, fixed in v0.9.1).
- * TLS 1.2 ECDHE_RSA uses PKCS1 signatures, which the key supports.
- * Even identities generated with PSS padding (see IdentityManager)
- * keep this restriction until the current key is replaced.
+ * The Create Server host side: a TLS listener on port 50000 that
+ * accepts one client at a time, verifies it with the same signed
+ * hello challenge the PC host uses (client presents its certificate
+ * in hello, host sends a 32-byte nonce, client signs RSA PKCS1v15 +
+ * SHA-256, host verifies against the presented certificate), shows
+ * the existing verification sheet, and hands the verified socket to
+ * SessionManager, which runs the session exactly like a dialled one.
+ *
+ * Listening is dual-stack: bind "::" first (IPv4 + IPv6 on one
+ * socket where the platform allows it), fall back to 0.0.0.0. The
+ * listener is retired and rebound when the network changes, and
+ * Copy/Share always bind to the current addresses.
+ *
+ * The identity key is a SOFTWARE key (v0.9.2): the TLS context
+ * offers the default protocols (TLS 1.3 and 1.2). v0.9.1 restricted
+ * the listener to TLS 1.2 because the then-current AndroidKeyStore
+ * key could only sign RSA-PKCS1; that restriction is gone now that
+ * the key supports PSS.
+ *
+ * No log file is ever written here: diagnostics go through DiagLog
+ * (in-memory + logcat only); the only file write in the app is
+ * DiagLog.exportUri(), on the user's Share tap in Settings.
  */
-internal val HOST_TLS_PROTOCOLS = arrayOf("TLSv1.2")
 
 /** In-memory KeyStore holding one private key + certificate pair. */
 internal fun buildHostKeyStore(privateKey: PrivateKey, identityCert: X509Certificate): KeyStore {
@@ -67,16 +79,39 @@ internal fun buildHostKeyStore(privateKey: PrivateKey, identityCert: X509Certifi
 /**
  * Host TLS context from a private key and the identity certificate.
  * The certificate must be the IdentityManager cert (identity.crt),
- * the same one fingerprint()/code() are derived from — never the
- * AndroidKeyStore auto-generated cert, which is a different cert
- * for the same key and would make the laptop compute a different
- * host fingerprint than the phone's My code shows.
+ * the same one fingerprint()/code() are derived from. The private
+ * key must be a SOFTWARE key (IdentityManager.privateKey()): its
+ * encoded form is available, so Conscrypt can use it for the
+ * handshake. An AndroidKeyStore key failed every host handshake
+ * (v0.9/v0.9.1) and must never be passed here.
  */
 internal fun createHostSslContext(privateKey: PrivateKey, identityCert: X509Certificate): SSLContext {
     val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
     keyManagerFactory.init(buildHostKeyStore(privateKey, identityCert), null)
     return SSLContext.getInstance("TLS").apply {
         init(keyManagerFactory.keyManagers, null, null)
+    }
+}
+
+/** Full exception chain, most recent first, for the diagnostics log:
+ * the top message alone hid the cause of the v0.9/v0.9.1 failures. */
+internal fun exceptionChain(e: Throwable): String {
+    val parts = ArrayList<String>()
+    var cur: Throwable? = e
+    while (cur != null && parts.size < 8) {
+        parts.add("${cur::class.simpleName}: ${cur.message}")
+        cur = cur.cause
+    }
+    return parts.joinToString(" <= ")
+}
+
+/** Negotiated session info for a failure log line, or "" when the
+ * handshake never produced a session. Never throws. */
+internal fun sessionInfo(tls: SSLSocket): String {
+    return try {
+        " session=${tls.session.protocol}/${tls.session.cipherSuite}"
+    } catch (_: Exception) {
+        ""
     }
 }
 
@@ -294,15 +329,16 @@ class HostManager(
         try {
             server.soTimeout = 1000
         } catch (_: Exception) {}
-        // TLS 1.2 only (see HOST_TLS_PROTOCOLS): the identity key
-        // cannot sign the TLS 1.3 CertificateVerify (RSA-PSS).
-        if ("TLSv1.2" in server.supportedProtocols) {
-            server.enabledProtocols = HOST_TLS_PROTOCOLS
-        } else {
-            DiagLog.log("host", "TLSv1.2 not supported, using default protocols")
-        }
         serverSocket = server
-        DiagLog.log("host", "listening on ${server.inetAddress?.hostAddress}:$SESSION_PORT")
+        try {
+            DiagLog.log(
+                "host",
+                "listening on ${server.inetAddress?.hostAddress}:$SESSION_PORT " +
+                    "cert=${identity.fingerprint()} " +
+                    "protocols=${server.enabledProtocols.joinToString(",")} " +
+                    "ciphers=${server.enabledCipherSuites.joinToString(",")}"
+            )
+        } catch (_: Exception) {}
         acceptJob = scope.launch { acceptLoop(server) }
     }
 
@@ -344,15 +380,12 @@ class HostManager(
     private suspend fun handleClient(tls: SSLSocket) {
         clientSocket = tls
         try {
-            // Accepted sockets inherit the server socket's protocols;
-            // set them explicitly anyway so a future listener change
-            // cannot silently re-enable TLS 1.3 here.
-            try {
-                if ("TLSv1.2" in tls.supportedProtocols) tls.enabledProtocols = HOST_TLS_PROTOCOLS
-            } catch (_: Exception) {}
             tls.soTimeout = 30_000
             tls.keepAlive = true
             tls.startHandshake()
+            try {
+                DiagLog.log("host", "handshake ok protocol=${tls.session.protocol} cipher=${tls.session.cipherSuite}")
+            } catch (_: Exception) {}
             val input = tls.inputStream
             val out = tls.outputStream
             val hello = try {
@@ -447,7 +480,7 @@ class HostManager(
             onSessionAccepted(tls, peerName, fingerprint, peerHost)
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
-            DiagLog.log("host", "handleClient FAILED: ${e::class.simpleName}: ${e.message}")
+            DiagLog.log("host", "handleClient FAILED: ${exceptionChain(e)}${sessionInfo(tls)}")
         } finally {
             if (clientSocket === tls) {
                 try { tls.close() } catch (_: Exception) {}
@@ -460,11 +493,11 @@ class HostManager(
      * certificate arrives inside hello, not via TLS client auth, so
      * no client-auth TrustManager is needed here. The presented
      * certificate is the IdentityManager cert (identity.crt), so the
-     * fingerprint the laptop computes matches the phone's My code. */
+     * fingerprint the laptop computes matches the phone's My code.
+     * The private key is the software key from IdentityManager —
+     * never an AndroidKeyStore key (see its class comment). */
     private fun buildServerSslContext(): SSLContext {
-        val androidKeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        val entry = androidKeyStore.getEntry("riptide_identity", null) as KeyStore.PrivateKeyEntry
-        return createHostSslContext(entry.privateKey, identityCertificate())
+        return createHostSslContext(identity.privateKey(), identityCertificate())
     }
 
     /** The identity certificate, parsed from identity.crt. */
