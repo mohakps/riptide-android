@@ -36,8 +36,10 @@ import com.riptide.util.formatRemainingTime
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.security.cert.Certificate
 import java.security.cert.X509Certificate
@@ -69,6 +71,14 @@ import android.util.Base64 as AndroidBase64
 
 enum class ConnectionState { IDLE, CONNECTING, CONNECTED, FAILED }
 
+/** Total window for one Join attempt across all candidates (J7/J8). */
+private const val JOIN_TOTAL_WINDOW_MS = 30_000L
+
+/** Timeout failure shown on Home (J8): title line first, then the
+ * host disclaimer and the role swap. Home splits on the newlines. */
+const val JOIN_TIMEOUT_MESSAGE =
+    "Couldn’t reach the server.\nCheck the disclaimer on the host phone: is port 50000 forwarded, and is the network behind CGNAT?\nOr ask the other phone to Create instead."
+
 /** Bytes counted and SHA-256 of a stream, read in one pass. Pure and unit tested. */
 internal fun hashAndCount(input: java.io.InputStream): Pair<Long, String> {
     val digest = MessageDigest.getInstance("SHA-256")
@@ -92,9 +102,18 @@ class SessionManager(private val context: Context) {
     private val receiveFolderRepo = ReceiveFolderRepository(context)
     private val receivedHistoryRepo = ReceivedHistoryRepository(context.filesDir)
 
+    /** Live network state: capability for Join validation (J1-J5),
+     * transport and addresses for Create Server. One monitor for the
+     * whole app, so Join and host never disagree about the network. */
+    val networkMonitor = NetworkMonitor(context)
+
     val myCode: String get() = try { identity.code() } catch (_: Exception) { "------" }
     val myFingerprint: String get() = try { identity.fingerprint() } catch (_: Exception) { "" }
     val deviceName: String get() = peers.deviceName()
+
+    /** Current dial attempt (J7), or null when not dialling. */
+    private val _attemptLabel = MutableStateFlow<String?>(null)
+    val attemptLabel: StateFlow<String?> = _attemptLabel.asStateFlow()
 
     private val _connection = MutableStateFlow(ConnectionState.IDLE)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
@@ -343,6 +362,7 @@ class SessionManager(private val context: Context) {
         approvalDecision = null
         _approval.value = null
         _approvalPhase.value = ApprovalPhase.NONE
+        _attemptLabel.value = null
         _error.value = null
         _transferError.value = null
         lastConnectedHost = null
@@ -352,8 +372,31 @@ class SessionManager(private val context: Context) {
 
     fun connect(hostInput: String) {
         if (_connection.value == ConnectionState.CONNECTING) return
+        // Validate against live capability first: an unsupported or
+        // malformed address never dials (J2/J3/J4), and an offline
+        // device never attempts (J6 offline). Home validates the same
+        // way live; this is the second check for rejoin and saved-peer
+        // paths that bypass the form.
+        val capability = networkMonitor.snapshot()
+        when (val validation = parseJoinInput(hostInput, capability)) {
+            is JoinValidation.Blank -> return
+            is JoinValidation.Offline -> {
+                _error.value = "No network. Connect and retry."
+                _connection.value = ConnectionState.FAILED
+                return
+            }
+            is JoinValidation.Malformed, is JoinValidation.Unsupported -> {
+                _error.value = validation.errorMessage()
+                _connection.value = ConnectionState.FAILED
+                return
+            }
+            is JoinValidation.Valid -> startConnect(validation, capability)
+        }
+    }
+
+    private fun startConnect(validation: JoinValidation.Valid, capability: DeviceCapability) {
         connectGeneration++
-        DiagLog.log("session", "connect start host=$hostInput")
+        DiagLog.log("session", "connect start host=${validation.host} hostname=${validation.isHostname}")
         // Set CONNECTING synchronously, before launching: two rapid
         // connects (double tap, or a resume rejoin racing a manual
         // Join) must not both dial.
@@ -362,11 +405,39 @@ class SessionManager(private val context: Context) {
         connectJob = scope.launch {
             _error.value = null
             _transferError.value = null
+            _attemptLabel.value = null
             try {
-                val host = parseHostInput(hostInput)
+                // A hostname resolves on submit (J5); an unresolvable
+                // name is malformed, and all-resolved-unsupported shows
+                // J2/J3 before any dial. A literal is one candidate.
+                val candidates: List<DialCandidate> = if (validation.isHostname) {
+                    val resolved = try {
+                        withContext(Dispatchers.IO) { InetAddress.getAllByName(validation.host).toList() }
+                    } catch (e: UnknownHostException) {
+                        throw IllegalStateException("That doesn’t look like an IP address or hostname.")
+                    }
+                    when (val classified = classifyResolved(resolved, capability)) {
+                        is ResolvedCandidates.Supported -> classified.candidates
+                        is ResolvedCandidates.Unsupported -> throw IllegalStateException(
+                            if (classified.family == AddressFamily.IPV6)
+                                "This address is IPv6, but this device has no IPv6."
+                            else
+                                "This address is IPv4, but this device has no IPv4."
+                        )
+                        ResolvedCandidates.Empty -> throw IllegalStateException("That doesn’t look like an IP address or hostname.")
+                    }
+                } else {
+                    val family = validation.family ?: AddressFamily.IPV4
+                    val kind = when (family) {
+                        AddressFamily.IPV6 -> CandidateKind.IPV6
+                        AddressFamily.IPV4 -> if (isLanIPv4Input(validation.host)) CandidateKind.LAN_IPV4 else CandidateKind.PUBLIC_IPV4
+                    }
+                    listOf(DialCandidate(validation.host, family, kind))
+                }
+                val host = candidates.first().host
                 currentHost = host
                 _peerHost.value = host
-                val session = dial(host)
+                val session = dialCandidates(candidates)
                 DiagLog.log("session", "dial ok host=$host device=${session.peerDevice}")
                 // A late success after Cancel must never open a session.
                 if (generation != attemptGeneration) {
@@ -376,6 +447,7 @@ class SessionManager(private val context: Context) {
                 _peerName.value = session.peerDevice.ifBlank { host }
                 _approval.value = null
                 _approvalPhase.value = ApprovalPhase.NONE
+                _attemptLabel.value = null
                 _connection.value = ConnectionState.CONNECTED
                 DiagLog.log("session", "CONNECTED host=$host")
                 lastConnectedHost = host
@@ -399,6 +471,7 @@ class SessionManager(private val context: Context) {
                 DiagLog.log("session", "connect failed: ${e::class.simpleName}: ${e.message}")
                 _approval.value = null
                 _approvalPhase.value = ApprovalPhase.NONE
+                _attemptLabel.value = null
                 if ("denied the fingerprint" in (e.message ?: "")) {
                     // A deliberate Deny is not an error state.
                     _error.value = null
@@ -410,6 +483,38 @@ class SessionManager(private val context: Context) {
                 closeSocket()
             }
         }
+    }
+
+    private fun isLanIPv4Input(host: String): Boolean {
+        return try {
+            val address = InetAddress.getByName(host)
+            isLanIPv4(address)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Attach a socket the host side already verified (C7): the peer
+     * approved us, hello_ok is sent, and the session runs exactly
+     * like a dialled one. No auto-rejoin of an accepted client: the
+     * host waits for the next client instead. */
+    fun attachHostSession(socket: SSLSocket, peerDevice: String, peerFingerprint: String, peerHost: String) {
+        if (_connection.value == ConnectionState.CONNECTED) return
+        connectGeneration++
+        val session = DialResult(socket, peerDevice, peerFingerprint)
+        this.socket = socket
+        _peerName.value = peerDevice.ifBlank { peerHost }
+        _peerHost.value = peerHost
+        _approval.value = null
+        _approvalPhase.value = ApprovalPhase.NONE
+        _connection.value = ConnectionState.CONNECTED
+        DiagLog.log("session", "HOST-ACCEPTED peer=$peerDevice host=$peerHost")
+        lastConnectedHost = null
+        _history.value = emptyList()
+        _batchMessage.value = null
+        startSessionService()
+        startReader(session)
+        startHeartbeat(session)
     }
 
     /** Deliberate disconnect. The cleanup runs in a coroutine, so a
@@ -489,6 +594,9 @@ class SessionManager(private val context: Context) {
     }
 
     private fun stopSessionService() {
+        // While hosting, the service stays for the listener even
+        // after a session ends; HostManager stops it on Stop.
+        if (TransferService.hostingActive) return
         DiagLog.log("service", "stopSessionService requested")
         try { context.stopService(Intent(context, TransferService::class.java)) } catch (_: Exception) {}
     }
@@ -602,7 +710,7 @@ class SessionManager(private val context: Context) {
     data class DialResult(val socket: SSLSocket, val peerDevice: String, val serverFingerprint: String)
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    private suspend fun dial(host: String): DialResult {
+    private suspend fun dial(host: String, timeoutMs: Long = JOIN_TOTAL_WINDOW_MS): DialResult {
         val capturing = object : X509TrustManager {
             var chain: Array<X509Certificate>? = null
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
@@ -613,7 +721,7 @@ class SessionManager(private val context: Context) {
         ctx.init(null, arrayOf<TrustManager>(capturing), null)
         val factory = ctx.socketFactory
         val raw = Socket()
-        raw.connect(InetSocketAddress(host, SESSION_PORT), 30_000)
+        raw.connect(InetSocketAddress(host, SESSION_PORT), timeoutMs.toInt())
         raw.soTimeout = 0
         raw.keepAlive = true
         val tls = factory.createSocket(raw, host, SESSION_PORT, true) as SSLSocket
@@ -699,6 +807,41 @@ class SessionManager(private val context: Context) {
             socket = tls
             DialResult(tls, peerDevice, serverFp)
         }
+    }
+
+    /** Try the candidates in order inside one 30-second total window
+     * (J7/J8). The attempt label follows the current candidate, and
+     * Cancel keeps the field: dialCandidates only throws, it never
+     * touches the form. When every candidate times out, the failure
+     * is the J8 timeout message; when the last failure is a refusal
+     * (or anything else), that failure surfaces instead. */
+    private suspend fun dialCandidates(candidates: List<DialCandidate>): DialResult {
+        val deadline = System.currentTimeMillis() + JOIN_TOTAL_WINDOW_MS
+        var lastError: Exception? = null
+        var allTimedOut = true
+        for (candidate in candidates) {
+            val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
+            _attemptLabel.value = candidateLabel(candidate.kind)
+            DiagLog.log("session", "trying ${candidate.kind} host=${candidate.host} remaining=${remaining}ms")
+            try {
+                val result = dial(candidate.host, remaining)
+                _attemptLabel.value = null
+                return result
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                lastError = e
+                if (!isTimeoutFailure(e)) allTimedOut = false
+                DiagLog.log("session", "candidate ${candidate.kind} failed: ${e::class.simpleName}: ${e.message}")
+            }
+        }
+        _attemptLabel.value = null
+        if (allTimedOut) throw IllegalStateException(JOIN_TIMEOUT_MESSAGE)
+        throw lastError ?: IllegalStateException(JOIN_TIMEOUT_MESSAGE)
+    }
+
+    private fun isTimeoutFailure(e: Exception): Boolean {
+        val m = (e.message ?: "").lowercase()
+        return e is java.net.SocketTimeoutException || "timed out" in m || "timeout" in m
     }
 
     private fun startHeartbeat(session: DialResult) {
@@ -1400,6 +1543,7 @@ class SessionManager(private val context: Context) {
     private fun friendlyError(e: Exception): String {
         val m = e.message ?: e.toString()
         return when {
+            m.startsWith("Couldn’t reach the server.") -> m
             "timed out" in m.lowercase() -> "Connection timed out. Check the PC is on Create Server, port 50000 is open, and the router forwards TCP 50000 to that PC."
             "refused" in m.lowercase() -> "Connection refused. The host is not listening on port 50000."
             "fingerprint changed" in m.lowercase() -> "Fingerprint changed, session aborted."

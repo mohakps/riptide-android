@@ -22,6 +22,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,13 +35,17 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.riptide.core.ConnectionState
 import com.riptide.core.DiagLog
+import com.riptide.core.HostManager
 import com.riptide.core.SessionManager
+import com.riptide.core.parseJoinLink
 import com.riptide.ui.approval.PeerApprovalSheet
 import com.riptide.ui.components.PhoneFingerprintSheet
 import com.riptide.ui.devices.DevicesScreen
 import com.riptide.ui.devices.DevicesViewModel
 import com.riptide.ui.home.HomeScreen
 import com.riptide.ui.home.HomeViewModel
+import com.riptide.ui.host.HostScreen
+import com.riptide.ui.host.HostViewModel
 import com.riptide.ui.model.ApprovalPhase
 import com.riptide.ui.navigation.RiptideTab
 import com.riptide.ui.received.ReceivedScreen
@@ -55,6 +60,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -106,6 +112,29 @@ class MainActivity : ComponentActivity() {
     // lifecycle-runtime-ktx, which is not declared.
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    /** Create Server host engine. One instance for the activity: the
+     * listener survives tab switches, and a session it accepts runs
+     * in the shared SessionManager. */
+    private val hostManager by lazy {
+        val app = application as RiptideApp
+        HostManager(
+            applicationContext,
+            app.session.networkMonitor,
+            app.session.connection
+        ) { socket, peerDevice, peerFingerprint, peerHost ->
+            app.session.attachHostSession(socket, peerDevice, peerFingerprint, peerHost)
+        }
+    }
+
+    /** A deep link that arrived while the activity was already running. */
+    private val deepLinkFlow = MutableStateFlow<String?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.data?.toString()?.let { deepLinkFlow.value = it }
+    }
+
     override fun onResume() {
         super.onResume()
         // v0.3.4 test build: log the return so the diagnostics log shows
@@ -145,10 +174,12 @@ class MainActivity : ComponentActivity() {
                 var currentTab by remember { mutableStateOf(RiptideTab.Transfer) }
                 var settingsOpen by remember { mutableStateOf(false) }
                 var fingerprintOpen by remember { mutableStateOf(false) }
+                var createServerOpen by remember { mutableStateOf(false) }
                 val snackbarHostState = remember { SnackbarHostState() }
                 val scope = rememberCoroutineScope()
 
                 val homeVm: HomeViewModel = viewModel(factory = HomeViewModel.Factory(session))
+                val hostVm: HostViewModel = viewModel(factory = HostViewModel.Factory(hostManager))
                 val sessionVm: SessionViewModel = viewModel(factory = SessionViewModel.Factory(session))
                 val devicesVm: DevicesViewModel = viewModel(factory = DevicesViewModel.Factory(session))
                 val receivedVm: ReceivedViewModel = viewModel(factory = ReceivedViewModel.Factory(session))
@@ -157,10 +188,56 @@ class MainActivity : ComponentActivity() {
                 val connection by session.connection.collectAsState()
                 val approval by session.approval.collectAsState()
                 val approvalPhase by session.approvalPhase.collectAsState()
+                val hostApproval by hostManager.approval.collectAsState()
+                val isHosting by hostManager.isHosting.collectAsState()
                 // The interrupted card (state 13) lives in the Session
                 // screen: keep showing it after a drop, instead of
                 // flipping straight to Home and losing it.
                 val sessionUiState by sessionVm.uiState.collectAsState()
+
+                fun openCreateServer() {
+                    // A dial in progress is cancelled: the phone is
+                    // either hosting or joining, never both.
+                    if (connection == ConnectionState.CONNECTING) session.cancelConnect()
+                    settingsOpen = false
+                    createServerOpen = true
+                    hostManager.startHosting()
+                }
+                fun closeCreateServer() {
+                    hostManager.stopHosting()
+                    createServerOpen = false
+                }
+
+                // A shared link (J6) or a deep link received while
+                // running: open Join with the address prefilled and
+                // validated, and wait for the user to tap Join.
+                // Never auto-connects, and never carries identity.
+                val deepLink by deepLinkFlow.collectAsState()
+                LaunchedEffect(deepLink) {
+                    deepLink?.let { raw ->
+                        parseJoinLink(raw)?.let { link ->
+                            closeCreateServer()
+                            settingsOpen = false
+                            currentTab = RiptideTab.Transfer
+                            homeVm.prefillFromLink(link.host)
+                        }
+                        deepLinkFlow.value = null
+                    }
+                }
+                LaunchedEffect(Unit) {
+                    intent?.data?.toString()?.let { deepLinkFlow.value = it }
+                }
+                // A host session that ends while still hosting returns
+                // to the waiting screen, not to Home.
+                var prevConnection by remember { mutableStateOf(connection) }
+                LaunchedEffect(connection) {
+                    if (prevConnection == ConnectionState.CONNECTED &&
+                        connection != ConnectionState.CONNECTED && isHosting
+                    ) {
+                        createServerOpen = true
+                    }
+                    prevConnection = connection
+                }
 
                 fun openSettings() {
                     settingsOpen = true
@@ -174,6 +251,7 @@ class MainActivity : ComponentActivity() {
                     when {
                         fingerprintOpen -> fingerprintOpen = false
                         settingsOpen -> closeSettings()
+                        createServerOpen -> closeCreateServer()
                         currentTab != RiptideTab.Transfer -> currentTab = RiptideTab.Transfer
                         else -> finish()
                     }
@@ -194,6 +272,11 @@ class MainActivity : ComponentActivity() {
                                     selected = selected,
                                     onClick = {
                                         settingsOpen = false
+                                        // Leaving Create Server for
+                                        // another tab hides the screen;
+                                        // hosting keeps running, and the
+                                        // Home card brings it back.
+                                        createServerOpen = false
                                         currentTab = tab
                                     },
                                     icon = {
@@ -264,17 +347,41 @@ class MainActivity : ComponentActivity() {
                             onNavigateToSettings = ::openSettings,
                             modifier = contentModifier
                         )
+                        createServerOpen -> HostScreen(
+                            viewModel = hostVm,
+                            onBack = ::closeCreateServer,
+                            onRoleSwap = {
+                                closeCreateServer()
+                                currentTab = RiptideTab.Transfer
+                            },
+                            modifier = contentModifier
+                        )
                         else -> HomeScreen(
                             viewModel = homeVm,
                             onNavigateToSettings = ::openSettings,
                             onShowFingerprint = { fingerprintOpen = true },
                             onShowAllDevices = { currentTab = RiptideTab.Devices },
+                            onOpenCreateServer = ::openCreateServer,
                             modifier = contentModifier
                         )
                     }
                 }
 
-                approval?.let { req ->
+                // C7: a client verified by the host uses the same
+                // sheet as a dialled host. Dismiss/Back is Decline;
+                // the host returns to waiting.
+                if (hostApproval != null) {
+                    PeerApprovalSheet(
+                        request = hostApproval!!,
+                        phase = ApprovalPhase.LOCAL_TRUST,
+                        myCode = session.myCode,
+                        myDeviceName = session.deviceName,
+                        myFingerprint = session.myFingerprint,
+                        onAllow = { hostVm.approveConnection(true) },
+                        onDeny = { hostVm.approveConnection(false) },
+                        onCancelWaiting = { hostVm.approveConnection(false) }
+                    )
+                } else approval?.let { req ->
                     if (approvalPhase != ApprovalPhase.NONE) {
                         PeerApprovalSheet(
                             request = req,

@@ -16,6 +16,16 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class TransferService : Service() {
+    companion object {
+        /** Set while Create Server is hosting. The service then stays
+         * up between sessions (waiting for the next client) instead
+         * of stopping itself when no session is connected, and
+         * SessionManager never stops it with stopService while it is
+         * set. HostManager owns this flag. */
+        @Volatile var hostingActive: Boolean = false
+        const val ACTION_HOSTING = "com.riptide.action.HOSTING"
+    }
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var job: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main + Job())
@@ -28,6 +38,9 @@ class TransferService : Service() {
             (application as RiptideApp).session.disconnect()
             stopSelf()
             return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_HOSTING) {
+            hostingActive = true
         }
         TransferNotificationHelper.createNotificationChannel(this)
         // Held for the whole session, not just a transfer, and with no
@@ -51,26 +64,39 @@ class TransferService : Service() {
         // work: a service started with startForegroundService must call
         // startForeground within 5 seconds or the system kills it. The
         // collector below replaces this notification at once with the
-        // right one (transfer progress, or connected).
+        // right one (transfer progress, connected, or waiting for a
+        // client while hosting).
         startForeground(
             TransferNotificationHelper.NOTIFICATION_ID,
-            TransferNotificationHelper.buildConnectedNotification(
-                this, session.peerName.value.ifBlank { "PC" }, contentIntent, cancelIntent
-            )
+            if (hostingActive && session.connection.value != ConnectionState.CONNECTED) {
+                TransferNotificationHelper.buildHostingNotification(this, contentIntent)
+            } else {
+                TransferNotificationHelper.buildConnectedNotification(
+                    this, session.peerName.value.ifBlank { "PC" }, contentIntent, cancelIntent
+                )
+            }
         )
         job?.cancel()
         job = scope.launch {
             combine(session.connection, session.active, session.peerName) { connection, active, peer ->
                 Triple(connection, active, peer)
             }.collect { (connection, active, peer) ->
-                // No session, no service. SessionManager also stops the
-                // service on disconnect and on every session failure;
-                // this is the second half of that pair, for the case
-                // where the connection drops without the manager
-                // noticing first.
+                // No session, no service — unless hosting, in which
+                // case the service waits for the next client. SessionManager
+                // also stops the service on disconnect and on every
+                // session failure; this is the second half of that pair,
+                // for the case where the connection drops without the
+                // manager noticing first.
                 if (connection != ConnectionState.CONNECTED) {
-                    DiagLog.log("service", "connection=$connection, stopSelf")
-                    stopSelf()
+                    if (!hostingActive) {
+                        DiagLog.log("service", "connection=$connection, stopSelf")
+                        stopSelf()
+                        return@collect
+                    }
+                    startForeground(
+                        TransferNotificationHelper.NOTIFICATION_ID,
+                        TransferNotificationHelper.buildHostingNotification(this@TransferService, contentIntent)
+                    )
                     return@collect
                 }
                 val notification = if (active != null) {

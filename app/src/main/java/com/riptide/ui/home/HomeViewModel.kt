@@ -4,7 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.riptide.core.ConnectionState
+import com.riptide.core.DeviceCapability
+import com.riptide.core.JoinValidation
 import com.riptide.core.SessionManager
+import com.riptide.core.errorMessage
+import com.riptide.core.parseJoinInput
 import com.riptide.ui.model.ApprovalRequest
 import com.riptide.ui.model.HomeUiState
 import com.riptide.ui.model.SavedPeer
@@ -22,10 +26,25 @@ import kotlinx.coroutines.launch
 class HomeViewModel(private val session: SessionManager? = null) : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+    /** Latest live capability, for validating the input as it changes. */
+    private var capability = DeviceCapability(hasIPv4 = true, hasIPv6 = true)
 
     init {
         session?.let { s ->
             _uiState.update { it.copy(myDeviceName = s.deviceName, myCode = s.myCode, myFullFingerprint = s.myFingerprint) }
+            viewModelScope.launch {
+                s.networkMonitor.capability.collect { cap ->
+                    capability = cap
+                    _uiState.update { st ->
+                        st.copy(capabilityText = cap.label()).let { withValidation(it) }
+                    }
+                }
+            }
+            viewModelScope.launch {
+                s.attemptLabel.collect { label ->
+                    _uiState.update { it.copy(attemptLabel = label) }
+                }
+            }
             viewModelScope.launch {
                 s.savedPeers.collect { peers ->
                     _uiState.update { st ->
@@ -66,8 +85,29 @@ class HomeViewModel(private val session: SessionManager? = null) : ViewModel() {
             // Typing a nonblank address clears the blank-field warning
             // and restores the helper; deleting back to blank keeps the
             // warning until a real address is entered.
-            it.copy(hostInput = trimmed, showBlankAddressError = if (trimmed.isNotBlank()) false else it.showBlankAddressError)
+            val base = it.copy(hostInput = trimmed, showBlankAddressError = if (trimmed.isNotBlank()) false else it.showBlankAddressError)
+            withValidation(base)
         }
+    }
+
+    /** Live J2/J3/J4/offline validation for the current input. Blank
+     * input has no validation error (the blank-submit warning owns
+     * that case) and keeps Join enabled, so tapping it with an empty
+     * field still shows "Enter a PC address." */
+    private fun withValidation(state: HomeUiState): HomeUiState {
+        return when (val validation = parseJoinInput(state.hostInput, capability)) {
+            is JoinValidation.Valid, is JoinValidation.Blank ->
+                state.copy(validationError = null, joinEnabled = true)
+            else ->
+                state.copy(validationError = validation.errorMessage(), joinEnabled = false)
+        }
+    }
+
+    /** Prefill from a shared link (J6): same validation immediately,
+     * no auto-connect. The user taps Join. */
+    fun prefillFromLink(host: String) {
+        onHostInputChanged(host)
+        _uiState.update { it.copy(connectionError = null) }
     }
 
     fun setSavedPeers(peers: List<SavedPeer>) {
@@ -77,16 +117,18 @@ class HomeViewModel(private val session: SessionManager? = null) : ViewModel() {
     /** Validate and start one Join attempt. The button stays coral and
      * tappable with an empty field: tapping it with a blank address
      * shows "Enter a PC address." and returns before any connection
-     * attempt. A second attempt while connecting is ignored by
+     * attempt. A validation failure (J2/J3/J4, offline) never dials.
+     * A second attempt while connecting is ignored by
      * SessionManager. */
     fun onJoinClicked() {
-        val host = _uiState.value.hostInput
-        if (host.isBlank()) {
+        val state = _uiState.value
+        if (state.hostInput.isBlank()) {
             _uiState.update { it.copy(showBlankAddressError = true) }
             return
         }
+        if (!state.joinEnabled) return
         _uiState.update { it.copy(showBlankAddressError = false, isConnecting = true, connectionError = null) }
-        session?.connect(host)
+        session?.connect(state.hostInput)
     }
 
     /** Join a saved peer from Home or Devices: fill the address, then join. */

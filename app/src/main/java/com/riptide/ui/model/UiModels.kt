@@ -1,5 +1,6 @@
 package com.riptide.ui.model
 
+import com.riptide.core.HostPhase
 import com.riptide.core.SessionManager
 enum class TrustStatus { KNOWN, NEW, CHANGED }
 enum class TransferDirection { SEND, RECEIVE }
@@ -42,7 +43,35 @@ data class HomeUiState(
     val approvalRequest: ApprovalRequest? = null,
     /** True after Join PC is tapped with a blank address: the helper
      * slot shows "Enter a PC address." until a nonblank address is typed. */
-    val showBlankAddressError: Boolean = false
+    val showBlankAddressError: Boolean = false,
+    /** Live capability line (J1): "This device: IPv4 + IPv6" and
+     * friends, or "No network. Connect and retry." offline. */
+    val capabilityText: String = "",
+    /** Live validation message for the current input (J2/J3/J4), or
+     * null when the input is blank or usable. */
+    val validationError: String? = null,
+    /** False while the current input is a validation failure: Join
+     * stays disabled for that address. Blank input keeps it enabled
+     * (tapping shows the blank-field warning). */
+    val joinEnabled: Boolean = true,
+    /** Current dial attempt (J7): "Trying IPv6…" and friends, or null
+     * when not dialling. */
+    val attemptLabel: String? = null
+)
+
+/** Create Server screen state (C1-C8). The listener only runs while
+ * phase is WAITING; the empty states (mobile IPv4-only, offline) show
+ * no waiting status, code tile, or Stop. */
+data class HostUiState(
+    val phase: HostPhase = HostPhase.OFFLINE,
+    val globalIPv6: String? = null,
+    val lanIPv4: String? = null,
+    val publicIPv4: String? = null,
+    val publicIPv4Loading: Boolean = false,
+    val advancedOpen: Boolean = false,
+    val showNetworkChanged: Boolean = false,
+    val myCode: String = "------",
+    val isListening: Boolean = false
 )
 
 data class ActiveTransfer(val filename: String, val direction: TransferDirection, val totalBytes: Long, val transferredBytes: Long, val speedFormatted: String, val progress: Float, val etaFormatted: String?)

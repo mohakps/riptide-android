@@ -64,4 +64,20 @@ object TransferNotificationHelper {
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", disconnectIntent)
             .build()
     }
+
+    /** The persistent notification while this phone is hosting (Create
+     * Server) with no client connected. Tap opens the app; stopping
+     * happens from the Stop button there, not from the notification. */
+    fun buildHostingNotification(
+        context: Context,
+        contentIntent: PendingIntent
+    ): Notification {
+        return NotificationCompat.Builder(context, CHANNEL_ID)
+            .setContentTitle("Waiting for client")
+            .setContentText("Riptide is listening on port 50000")
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setOngoing(true)
+            .setContentIntent(contentIntent)
+            .build()
+    }
 }

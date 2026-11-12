@@ -3,6 +3,7 @@ package com.riptide.ui.home
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -23,11 +24,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -39,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.liveRegion
@@ -50,6 +54,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.riptide.R
 import com.riptide.ui.components.PeerRow
 import com.riptide.ui.components.RiptideTopBar
 import com.riptide.ui.components.StackedDeviceIdentity
@@ -70,6 +75,7 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onShowFingerprint: () -> Unit,
     onShowAllDevices: () -> Unit,
+    onOpenCreateServer: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -157,17 +163,22 @@ fun HomeScreen(
                         }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
-                // The helper and the blank-field warning share this
-                // 14/20 supporting-text slot, so the layout stays
-                // stable when the warning appears. The warning is
-                // announced when it first appears.
+                // The helper, the blank-field warning, and the live
+                // validation messages share this 14/20 supporting-text
+                // slot, so the layout stays stable when one appears.
+                // J1: the helper is the live capability line. A
+                // validation failure is coral, like the blank warning.
+                val validationError = uiState.validationError
+                val helperText = when {
+                    uiState.showBlankAddressError -> "Enter a PC address."
+                    uiState.isConnecting -> uiState.attemptLabel ?: "Connecting… · Up to 30 seconds"
+                    validationError != null -> validationError
+                    else -> uiState.capabilityText.ifBlank { "Hostname, IP or user@host" }
+                }
+                val helperIsError = uiState.showBlankAddressError || validationError != null
                 Text(
-                    text = when {
-                        uiState.showBlankAddressError -> "Enter a PC address."
-                        uiState.isConnecting -> "Connecting… · Up to 30 seconds"
-                        else -> "Hostname, IP or user@host"
-                    },
-                    color = if (uiState.showBlankAddressError) RiptideColors.Error else RiptideColors.OnSurfaceVariant,
+                    text = helperText,
+                    color = if (helperIsError) RiptideColors.Error else RiptideColors.OnSurfaceVariant,
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     modifier = Modifier.semantics {
@@ -190,11 +201,18 @@ fun HomeScreen(
                     // Join PC stays coral and tappable with an empty
                     // field: tapping it runs validation, which shows
                     // the blank-field warning instead of connecting.
+                    // A validation failure disables it for that address.
                     Button(
                         onClick = { keyboardController?.hide(); viewModel.onJoinClicked() },
+                        enabled = uiState.joinEnabled,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                         shape = RoundedCornerShape(28.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RiptideColors.Primary,
+                            contentColor = RiptideColors.OnPrimary,
+                            disabledContainerColor = RiptideColors.SurfaceRaised,
+                            disabledContentColor = RiptideColors.OnSurfaceVariant
+                        )
                     ) {
                         Text("Join PC", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                     }
@@ -203,10 +221,24 @@ fun HomeScreen(
                     // The heading must match the failure: a session the PC
                     // ended is not a PC that could not be reached, and a
                     // transfer error never reaches this screen at all now.
+                    // J8 carries its own title and recovery lines, split
+                    // on the newlines the timeout message was built with.
                     val sessionEnded = err == "The PC ended the session."
+                    val isTimeout = err.startsWith("Couldn’t reach the server.")
+                    val title = when {
+                        sessionEnded -> "Session ended"
+                        isTimeout -> err.substringBefore('\n')
+                        else -> "Couldn't reach this PC"
+                    }
+                    val body = when {
+                        sessionEnded -> "$err Reconnect to start a new session."
+                        isTimeout -> err.substringAfter('\n')
+                        "Create Server" in err -> err
+                        else -> "$err Check the address and start Create Server on the PC. Then try Join PC again."
+                    }
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = if (sessionEnded) "Session ended" else "Couldn't reach this PC",
+                        text = title,
                         color = RiptideColors.Error,
                         fontSize = 17.sp,
                         lineHeight = 24.sp,
@@ -214,16 +246,30 @@ fun HomeScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        // The design's recovery line, unless the cause already
-                        // carries its own (e.g. the timeout hint).
-                        text = if (sessionEnded) "$err Reconnect to start a new session."
-                        else if ("Create Server" in err) err
-                        else "$err Check the address and start Create Server on the PC. Then try Join PC again.",
+                        text = body,
                         color = RiptideColors.OnSurfaceVariant,
                         fontSize = 14.sp,
                         lineHeight = 20.sp
                     )
+                    // J8: the address is retained in the field, and
+                    // Retry runs the same Join again.
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = { viewModel.onJoinClicked() },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RiptideColors.SurfaceRaised,
+                            contentColor = RiptideColors.OnSurface
+                        )
+                    ) {
+                        Text("Retry", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    }
                 }
+                // Create Server (Home option 04): the whole card opens
+                // it. Below Join, above Recent devices.
+                Spacer(modifier = Modifier.height(32.dp))
+                CreateServerCard(onClick = onOpenCreateServer)
                 Spacer(modifier = Modifier.height(32.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -266,6 +312,53 @@ fun HomeScreen(
                 }
                 Spacer(modifier = Modifier.height(24.dp))
             }
+        }
+    }
+}
+
+/** Home option 04: a full-width card that opens Create Server. The
+ * whole card is one action; it grows with text size (min 72 dp). */
+@Composable
+private fun CreateServerCard(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        color = RiptideColors.Surface,
+        shape = RoundedCornerShape(24.dp),
+        modifier = modifier.fillMaxWidth().clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.riptide_server),
+                contentDescription = null,
+                modifier = Modifier.size(28.dp),
+                tint = RiptideColors.Primary
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Create Server",
+                    color = RiptideColors.OnSurface,
+                    fontSize = 17.sp,
+                    lineHeight = 24.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Let another device join this phone.",
+                    color = RiptideColors.OnSurfaceVariant,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Icon(
+                painter = painterResource(R.drawable.riptide_arrow),
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = RiptideColors.OnSurface
+            )
         }
     }
 }

@@ -18,8 +18,15 @@ data class SavedPeerRecord(
     val lastSuccessfulConnection: Long = 0L
 )
 
+/** A client this phone has approved while hosting, keyed by its
+ * certificate fingerprint. The device name is a label only: a
+ * different fingerprint for a known name is CHANGED, never a silent
+ * replacement. */
+data class TrustedClientRecord(val fingerprint: String, val name: String)
+
 class PeerRepository(private val context: Context) {
     private val peersKey = stringPreferencesKey("saved_peers")
+    private val trustedClientsKey = stringPreferencesKey("trusted_clients")
     private val deviceKey = stringPreferencesKey("device_name")
 
     fun deviceName(): String {
@@ -84,6 +91,39 @@ class PeerRepository(private val context: Context) {
         runBlocking {
             val list = loadPeers().filter { it.host != host }
             persist(list)
+        }
+    }
+
+    /** Clients approved while this phone was hosting, newest first. */
+    fun loadTrustedClients(): List<TrustedClientRecord> {
+        return runBlocking {
+            val raw = context.riptideDataStore.data.first()[trustedClientsKey] ?: return@runBlocking emptyList()
+            try {
+                val arr = JSONArray(raw)
+                List(arr.length()) { i ->
+                    val o = arr.getJSONObject(i)
+                    TrustedClientRecord(o.optString("fingerprint"), o.optString("name"))
+                }
+            } catch (_: Exception) { emptyList() }
+        }
+    }
+
+    /** Record an approved client. A changed fingerprint for a known
+     * name replaces only after the user explicitly allowed it in the
+     * verification sheet; a new name is added. */
+    fun saveTrustedClient(fingerprint: String, name: String) {
+        runBlocking {
+            val list = loadTrustedClients().toMutableList()
+            val byFp = list.indexOfFirst { it.fingerprint == fingerprint }
+            if (byFp >= 0) {
+                list[byFp] = list[byFp].copy(name = name)
+            } else {
+                val byName = list.indexOfFirst { it.name == name }
+                if (byName >= 0) list[byName] = list[byName].copy(fingerprint = fingerprint) else list.add(0, TrustedClientRecord(fingerprint, name))
+            }
+            val arr = JSONArray()
+            list.forEach { arr.put(JSONObject().apply { put("fingerprint", it.fingerprint); put("name", it.name) }) }
+            context.riptideDataStore.edit { it[trustedClientsKey] = arr.toString() }
         }
     }
 
