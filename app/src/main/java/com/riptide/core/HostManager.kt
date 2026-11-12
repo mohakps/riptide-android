@@ -15,7 +15,10 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.SocketTimeoutException
 import java.security.KeyStore
+import java.security.PrivateKey
 import java.security.SecureRandom
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
@@ -39,6 +42,43 @@ import javax.net.ssl.HttpsURLConnection
 
 /** How long the "Network changed. Share the new address." notice stays up. */
 private const val NETWORK_CHANGED_NOTICE_MS = 4000L
+
+/**
+ * TLS versions the host listener offers. TLS 1.2 only: the
+ * AndroidKeyStore identity key signs RSA-PKCS1 only (PURPOSE_SIGN +
+ * SIGNATURE_PADDING_RSA_PKCS1), and TLS 1.3 requires RSA-PSS for the
+ * server CertificateVerify, which this key cannot do. A Python
+ * TLS 1.3 client (the PC joiner) failed the handshake against a
+ * TLS 1.3 listener for exactly this reason (v0.9, fixed in v0.9.1).
+ * TLS 1.2 ECDHE_RSA uses PKCS1 signatures, which the key supports.
+ * Even identities generated with PSS padding (see IdentityManager)
+ * keep this restriction until the current key is replaced.
+ */
+internal val HOST_TLS_PROTOCOLS = arrayOf("TLSv1.2")
+
+/** In-memory KeyStore holding one private key + certificate pair. */
+internal fun buildHostKeyStore(privateKey: PrivateKey, identityCert: X509Certificate): KeyStore {
+    return KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+        load(null)
+        setKeyEntry("riptide_identity", privateKey, null, arrayOf(identityCert))
+    }
+}
+
+/**
+ * Host TLS context from a private key and the identity certificate.
+ * The certificate must be the IdentityManager cert (identity.crt),
+ * the same one fingerprint()/code() are derived from — never the
+ * AndroidKeyStore auto-generated cert, which is a different cert
+ * for the same key and would make the laptop compute a different
+ * host fingerprint than the phone's My code shows.
+ */
+internal fun createHostSslContext(privateKey: PrivateKey, identityCert: X509Certificate): SSLContext {
+    val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+    keyManagerFactory.init(buildHostKeyStore(privateKey, identityCert), null)
+    return SSLContext.getInstance("TLS").apply {
+        init(keyManagerFactory.keyManagers, null, null)
+    }
+}
 
 /**
  * The Create Server host side: a TLS listener on port 50000 that
@@ -254,6 +294,13 @@ class HostManager(
         try {
             server.soTimeout = 1000
         } catch (_: Exception) {}
+        // TLS 1.2 only (see HOST_TLS_PROTOCOLS): the identity key
+        // cannot sign the TLS 1.3 CertificateVerify (RSA-PSS).
+        if ("TLSv1.2" in server.supportedProtocols) {
+            server.enabledProtocols = HOST_TLS_PROTOCOLS
+        } else {
+            DiagLog.log("host", "TLSv1.2 not supported, using default protocols")
+        }
         serverSocket = server
         DiagLog.log("host", "listening on ${server.inetAddress?.hostAddress}:$SESSION_PORT")
         acceptJob = scope.launch { acceptLoop(server) }
@@ -297,6 +344,12 @@ class HostManager(
     private suspend fun handleClient(tls: SSLSocket) {
         clientSocket = tls
         try {
+            // Accepted sockets inherit the server socket's protocols;
+            // set them explicitly anyway so a future listener change
+            // cannot silently re-enable TLS 1.3 here.
+            try {
+                if ("TLSv1.2" in tls.supportedProtocols) tls.enabledProtocols = HOST_TLS_PROTOCOLS
+            } catch (_: Exception) {}
             tls.soTimeout = 30_000
             tls.keepAlive = true
             tls.startHandshake()
@@ -405,19 +458,19 @@ class HostManager(
 
     /** TLS server context from the phone's own identity. The client
      * certificate arrives inside hello, not via TLS client auth, so
-     * no client-auth TrustManager is needed here. */
+     * no client-auth TrustManager is needed here. The presented
+     * certificate is the IdentityManager cert (identity.crt), so the
+     * fingerprint the laptop computes matches the phone's My code. */
     private fun buildServerSslContext(): SSLContext {
         val androidKeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val entry = androidKeyStore.getEntry("riptide_identity", null) as KeyStore.PrivateKeyEntry
-        val memoryStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
-            load(null)
-            setKeyEntry("riptide_identity", entry.privateKey, null, entry.certificateChain)
-        }
-        val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-        keyManagerFactory.init(memoryStore, null)
-        return SSLContext.getInstance("TLS").apply {
-            init(keyManagerFactory.keyManagers, null, null)
-        }
+        return createHostSslContext(entry.privateKey, identityCertificate())
+    }
+
+    /** The identity certificate, parsed from identity.crt. */
+    private fun identityCertificate(): X509Certificate {
+        val cf = CertificateFactory.getInstance("X.509")
+        return cf.generateCertificate(identity.certDer().inputStream()) as X509Certificate
     }
 
     /** Public IPv4 for Advanced (Wi-Fi only): plain HTTPS IP lookup,

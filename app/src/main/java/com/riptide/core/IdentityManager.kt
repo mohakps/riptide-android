@@ -134,7 +134,15 @@ class IdentityManager(private val context: Context? = null) {
             )
                 .setKeySize(2048)
                 .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
-                .setSignaturePaddings(android.security.keystore.KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                // PKCS1 is what the current identity uses (TLS 1.2
+                // host handshakes sign with it). PSS is allowed for
+                // identities generated after this change so a future
+                // identity could do TLS 1.3; the existing key is
+                // untouched and its fingerprint/code do not change.
+                .setSignaturePaddings(
+                    android.security.keystore.KeyProperties.SIGNATURE_PADDING_RSA_PKCS1,
+                    android.security.keystore.KeyProperties.SIGNATURE_PADDING_RSA_PSS
+                )
                 .build()
             kpg.initialize(spec)
             keyPair = kpg.generateKeyPair()
