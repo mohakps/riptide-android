@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -37,6 +40,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -81,24 +85,44 @@ internal val ACTION_COLUMN_WIDTH = 72.dp
 internal val ROW_MIN_HEIGHT = 108.dp
 
 /**
- * Create Server (C1-C8). Alignment and screen fit (v0.9.5):
- * 24 dp gutters; header is ONE horizontal row — the waiting group
- * (coral 28 dp radio glyph left of the two-line status, 10 dp gap)
- * vertically centered beside the ivory code tile (148x76 dp at the
- * reference width) at the right edge; 24 dp from the header to the
- * first address row; address rows of three separate rounded
- * rectangles (address cell #1C1C1C with 16 dp corners and 16 dp
- * horizontal padding, 72 dp action column, Copy #1C1C1C above
- * Share #FF6B6B, 14 dp corners, 6 dp gaps), 108 dp reference
- * height with both regular rows matched to the taller; Advanced
- * is a 48 dp target 8 dp after the last row; the footer (network
- * notice, then Back to addresses above Stop) is anchored above
- * the bottom navigation with the flexible space between body and
- * footer, and the full content fits without scrolling at 360x720 dp
- * and at the screenshot's device size. The whole code tile copies
- * the code; the Advanced footer buttons match heights. The empty
- * states (mobile IPv4-only, offline) show no waiting status, code
- * tile, or Stop. "Listening on port 50000" is deliberately omitted.
+ * Create Server (C1-C8). Layout ownership (v0.9.6, "Fix Create
+ * Server screen fit"): ONE screen layout with an app bar, a body,
+ * and a footer. The body occupies the FULL measured space between
+ * the app bar and the footer. The app bar lives in the Scaffold's
+ * top slot and the action stack (network notice, then Back to
+ * addresses above Stop) in the bottom slot; the Scaffold measures
+ * both at their content heights before laying out the body, so
+ * the body knows exactly the space that is left. The bottom
+ * navigation is owned by the parent (MainActivity): its space is
+ * reserved through the `modifier` passed in, and this Scaffold
+ * applies no window insets of its own — the top bar consumes the
+ * status bar once via statusBarsPadding. There is no weighted
+ * spacer outside the body and no fixed or fractional body height:
+ * the body is a single scrollable column that fills the content
+ * area, its content placed at the top, and any unused height
+ * follows its last item WITHIN the body. The header is ONE
+ * horizontal row — the waiting group (coral 28 dp radio glyph
+ * left of the two-line status, 10 dp gap) vertically centered
+ * beside the ivory code tile (148x76 dp at the reference width)
+ * at the right edge; 24 dp from the header to the first address
+ * row; address rows of three separate rounded rectangles
+ * (address cell #1C1C1C with 16 dp corners and 16 dp horizontal
+ * padding, 72 dp action column, Copy #1C1C1C above Share #FF6B6B,
+ * 14 dp corners, 6 dp gaps), 108 dp reference height with both
+ * regular rows matched to the taller; Advanced is a 48 dp target
+ * 8 dp after the last row. The whole code tile copies the code;
+ * the Advanced footer buttons match heights. The empty states
+ * (mobile IPv4-only, offline) show no waiting status, code tile,
+ * or Stop. "Listening on port 50000" is deliberately omitted.
+ *
+ * Why this shape: v0.9.5 put TWO weight(1f) siblings in one
+ * Column — the body (fill = false) and a flexible Spacer outside
+ * it — so the remaining space after the footer was split 50/50
+ * between them. The body was capped at half the available height
+ * (about 238 dp at 360x720, against 386 dp of content) and
+ * became a short scroll region, while the other half sat as dead
+ * empty space above the footer. The body is now the only child
+ * that fills the space, and the spacer is gone.
  */
 @Composable
 fun HostScreen(
@@ -111,6 +135,15 @@ fun HostScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    // The body's single scroll state, hoisted so it can be reset:
+    // start at the top on entry and when switching between
+    // standard and Advanced (or when the phase changes). The body
+    // keeps one scroll state across those switches, so without
+    // this reset the user could land mid-content.
+    val scrollState = rememberScrollState()
+    LaunchedEffect(uiState.phase, uiState.advancedOpen) {
+        scrollState.scrollTo(0)
+    }
 
     fun copyAddress(address: String, label: String) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -137,56 +170,82 @@ fun HostScreen(
     }
 
     Scaffold(
+        topBar = {
+            // App bar, measured at its content height: the back
+            // affordance + "Create Server", with the status bar
+            // consumed once here (16 dp below it, as before).
+            Column(modifier = Modifier.statusBarsPadding()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 24.dp, top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
+                        Icon(
+                            painter = painterResource(R.drawable.riptide_back),
+                            contentDescription = "Back",
+                            modifier = Modifier.size(24.dp),
+                            tint = RiptideColors.OnSurface
+                        )
+                    }
+                    Text(
+                        text = "Create Server",
+                        color = RiptideColors.OnSurface,
+                        fontSize = 24.sp,
+                        lineHeight = 32.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        },
+        bottomBar = {
+            // Footer, measured at its content height before the
+            // body: the network notice first, then Back to
+            // addresses (Advanced only) above Stop. The bottom
+            // navigation is NOT here — the parent owns it and its
+            // space is already reserved by `modifier`.
+            if (uiState.phase == HostPhase.WAITING) {
+                HostFooter(
+                    uiState = uiState,
+                    onBackToAddresses = viewModel::backToAddresses,
+                    onStop = { viewModel.stop(); onBack() }
+                )
+            }
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        // No window insets of our own: the parent already
+        // reserves the bottom navigation's height, and the top
+        // bar consumes the status bar once. The Scaffold's
+        // default insets would reserve the navigation inset a
+        // second time and shrink the body.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         containerColor = RiptideColors.Background,
         modifier = modifier
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // App bar: existing back affordance + "Create Server".
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 24.dp, top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
-                    Icon(
-                        painter = painterResource(R.drawable.riptide_back),
-                        contentDescription = "Back",
-                        modifier = Modifier.size(24.dp),
-                        tint = RiptideColors.OnSurface
-                    )
-                }
-                Text(
-                    text = "Create Server",
-                    color = RiptideColors.OnSurface,
-                    fontSize = 24.sp,
-                    lineHeight = 32.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-            when (uiState.phase) {
-                HostPhase.OFFLINE -> EmptyHostState(
-                    message = "No network. Connect and retry.",
-                    onRoleSwap = null,
-                    modifier = Modifier.weight(1f)
-                )
-                HostPhase.MOBILE_V4_ONLY -> EmptyHostState(
-                    message = "No IPv6 on this network, so there is nothing to share.",
-                    onRoleSwap = onRoleSwap,
-                    modifier = Modifier.weight(1f)
-                )
-                HostPhase.WAITING -> WaitingHostContent(
-                    uiState = uiState,
-                    onCopy = ::copyAddress,
-                    onShare = ::shareAddress,
-                    onCopyCode = ::copyCode,
-                    onToggleAdvanced = { viewModel.setAdvancedOpen(!uiState.advancedOpen) },
-                    onBackToAddresses = viewModel::backToAddresses,
-                    onRoleSwap = onRoleSwap,
-                    onStop = { viewModel.stop(); onBack() },
-                    modifier = Modifier.weight(1f)
-                )
-            }
+        // The Scaffold's content padding is exactly the app bar
+        // height above and the footer height below, so this area
+        // IS the measured space between them. The body fills it.
+        when (uiState.phase) {
+            HostPhase.OFFLINE -> EmptyHostState(
+                message = "No network. Connect and retry.",
+                onRoleSwap = null,
+                modifier = Modifier.padding(padding).fillMaxSize()
+            )
+            HostPhase.MOBILE_V4_ONLY -> EmptyHostState(
+                message = "No IPv6 on this network, so there is nothing to share.",
+                onRoleSwap = onRoleSwap,
+                modifier = Modifier.padding(padding).fillMaxSize()
+            )
+            HostPhase.WAITING -> WaitingHostBody(
+                uiState = uiState,
+                scrollState = scrollState,
+                onCopy = ::copyAddress,
+                onShare = ::shareAddress,
+                onCopyCode = ::copyCode,
+                onToggleAdvanced = { viewModel.setAdvancedOpen(!uiState.advancedOpen) },
+                onRoleSwap = onRoleSwap,
+                modifier = Modifier.padding(padding)
+            )
         }
     }
 }
@@ -224,43 +283,43 @@ private fun EmptyHostState(
     }
 }
 
-/** C1/C3/C4/C5: header row, address rows (or Advanced), footer.
+/** C1/C3/C4/C5: header row and address rows (or Advanced).
  *
- * Fit: the body is laid out from the top and the footer is
- * anchored above the bottom navigation, with the flexible space
- * between them. The footer (a non-weight child) is measured by
- * the Column BEFORE the weighted body and spacer, so the body
- * knows the space that is left. The body scrolls only its own
- * area, and only when the content still exceeds the available
- * height after the gaps have been reduced (see [chooseGaps]).
- * The network notice lives in the footer, so it can never shift
- * the address area, and its slot collapses to zero height when
- * it clears. */
+ * The body is the ENTIRE scroll region and the only child that
+ * fills the Scaffold's content area: a single scrollable Column
+ * with `fillMaxSize`, its content placed at the top. There is no
+ * weight on the body (the Scaffold's content area already IS the
+ * measured space between the app bar and the footer) and no
+ * weighted spacer anywhere — any unused height simply follows
+ * the last item inside this column, so the body's measured bottom
+ * edge is always the footer's top edge and the scroll range is
+ * zero whenever the content fits. The gaps compact first when
+ * the measured content exceeds the available height (see
+ * [chooseGaps]); the body scrolls on its own only if the compact
+ * layout still overflows (shorter windows, enlarged text). */
 @Composable
-private fun WaitingHostContent(
+private fun WaitingHostBody(
     uiState: HostUiState,
+    scrollState: ScrollState,
     onCopy: (String, String) -> Unit,
     onShare: (String, AddressFamily) -> Unit,
     onCopyCode: () -> Unit,
     onToggleAdvanced: () -> Unit,
-    onBackToAddresses: () -> Unit,
     onRoleSwap: () -> Unit,
-    onStop: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val rowCount = if (uiState.advancedOpen) 1
             else listOfNotNull(uiState.globalIPv6, uiState.lanIPv4).size
-        val gaps = chooseGaps(maxHeight, rowCount, uiState.advancedOpen, uiState.showNetworkChanged)
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Body, top-anchored: takes what its content needs (up
-            // to the space left by the footer) and scrolls only
-            // itself when the content still overflows.
-            Column(
-                modifier = Modifier.weight(1f, fill = false)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp)
-            ) {
+        // maxHeight here is the body's own measured height — the
+        // space between the app bar and the footer — so the gap
+        // decision is made against the space the body really has.
+        val gaps = chooseGaps(maxHeight, rowCount, uiState.advancedOpen)
+        Column(
+            modifier = Modifier.fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 24.dp)
+        ) {
                 // Header: ONE horizontal row. The waiting group
                 // (28 dp coral radio glyph, 10 dp gap, two-line
                 // 20/24 sp medium status) is vertically centered
@@ -465,75 +524,85 @@ private fun WaitingHostContent(
                     }
                 }
             }
-            // Flexible space between the body and the footer: the
-            // footer stays anchored above the bottom navigation
-            // and the buttons stay visible without a gesture.
-            Spacer(modifier = Modifier.weight(1f))
-            // Footer: the network notice first, then Back to
-            // addresses (Advanced only) above Stop. Both buttons
-            // share one height: each reports its natural height
-            // and both are laid out at the taller of the two,
-            // never below 56 dp, so a wrapped label at enlarged
-            // text grows both together. The notice slot collapses
-            // to zero height when it clears.
-            val density = LocalDensity.current
-            var backButtonHeight by remember { mutableStateOf(0.dp) }
-            var stopButtonHeight by remember { mutableStateOf(0.dp) }
-            fun reportBackHeight(size: IntSize) {
-                val h = with(density) { size.height.toDp() }
-                if (h > backButtonHeight) backButtonHeight = h
-            }
-            fun reportStopHeight(size: IntSize) {
-                val h = with(density) { size.height.toDp() }
-                if (h > stopButtonHeight) stopButtonHeight = h
-            }
-            val matchedHeight = matchedFooterHeight(backButtonHeight, stopButtonHeight)
-            val haveBothHeights = backButtonHeight > 0.dp && stopButtonHeight > 0.dp
-            val footerButtonModifier: Modifier = Modifier.fillMaxWidth()
-                .heightIn(min = 56.dp)
-                .then(if (haveBothHeights) Modifier.height(matchedHeight) else Modifier)
-            val footerButtonShape = RoundedCornerShape(50)
-            val footerButtonPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
-                if (uiState.showNetworkChanged) {
-                    Text(
-                        text = "Network changed. Share the new address.",
-                        color = RiptideColors.Primary,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-                if (uiState.advancedOpen) {
-                    Button(
-                        onClick = onBackToAddresses,
-                        modifier = footerButtonModifier.onSizeChanged(::reportBackHeight),
-                        shape = footerButtonShape,
-                        contentPadding = footerButtonPadding,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = RiptideColors.SurfaceRaised,
-                            contentColor = RiptideColors.OnSurface
-                        )
-                    ) {
-                        Text("Back to addresses", fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    }
-                    Spacer(modifier = Modifier.height(gaps.footerButtonGap))
-                }
-                Button(
-                    onClick = onStop,
-                    modifier = footerButtonModifier.onSizeChanged(::reportStopHeight),
-                    shape = footerButtonShape,
-                    contentPadding = footerButtonPadding,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = RiptideColors.Primary,
-                        contentColor = RiptideColors.OnPrimary
-                    )
-                ) {
-                    Text("Stop", fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                }
-                Spacer(modifier = Modifier.height(gaps.footerBottom))
-            }
         }
+}
+
+/** Footer for the Scaffold's bottom slot: the network notice
+ * first, then Back to addresses (Advanced only) above Stop. The
+ * Scaffold measures this at its content height before laying out
+ * the body, so the body knows the space that is left; the footer
+ * itself never scrolls and stays visible. Both buttons share one
+ * height: each reports its natural height and both are laid out
+ * at the taller of the two, never below 56 dp, so a wrapped label
+ * at enlarged text grows both together. The notice slot collapses
+ * to zero height when it clears. The button gap (8 dp) and the
+ * 12 dp below Stop are fixed spec values, not part of the body's
+ * gap choice: the footer is outside the body's fit budget, and
+ * shrinking it would not save the body a scroll. */
+@Composable
+private fun HostFooter(
+    uiState: HostUiState,
+    onBackToAddresses: () -> Unit,
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    var backButtonHeight by remember { mutableStateOf(0.dp) }
+    var stopButtonHeight by remember { mutableStateOf(0.dp) }
+    fun reportBackHeight(size: IntSize) {
+        val h = with(density) { size.height.toDp() }
+        if (h > backButtonHeight) backButtonHeight = h
+    }
+    fun reportStopHeight(size: IntSize) {
+        val h = with(density) { size.height.toDp() }
+        if (h > stopButtonHeight) stopButtonHeight = h
+    }
+    val matchedHeight = matchedFooterHeight(backButtonHeight, stopButtonHeight)
+    val haveBothHeights = backButtonHeight > 0.dp && stopButtonHeight > 0.dp
+    val footerButtonModifier: Modifier = Modifier.fillMaxWidth()
+        .heightIn(min = 56.dp)
+        .then(if (haveBothHeights) Modifier.height(matchedHeight) else Modifier)
+    val footerButtonShape = RoundedCornerShape(50)
+    val footerButtonPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
+    Column(modifier = modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+        if (uiState.showNetworkChanged) {
+            Text(
+                text = "Network changed. Share the new address.",
+                color = RiptideColors.Primary,
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        if (uiState.advancedOpen) {
+            Button(
+                onClick = onBackToAddresses,
+                modifier = footerButtonModifier.onSizeChanged(::reportBackHeight),
+                shape = footerButtonShape,
+                contentPadding = footerButtonPadding,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = RiptideColors.SurfaceRaised,
+                    contentColor = RiptideColors.OnSurface
+                )
+            ) {
+                Text("Back to addresses", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        Button(
+            onClick = onStop,
+            modifier = footerButtonModifier.onSizeChanged(::reportStopHeight),
+            shape = footerButtonShape,
+            contentPadding = footerButtonPadding,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = RiptideColors.Primary,
+                contentColor = RiptideColors.OnPrimary
+            )
+        ) {
+            Text("Stop", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+        }
+        // 12 dp between Stop and the bottom navigation.
+        Spacer(modifier = Modifier.height(12.dp))
     }
 }
 
@@ -670,9 +739,12 @@ internal fun matchedRowHeight(first: Dp, second: Dp): Dp =
 
 /** Vertical gaps for the Create Server body. [NORMAL_GAPS] is the
  * spec layout; [COMPACT_GAPS] is used first when the measured
- * content exceeds the available height, before any scrolling.
- * The footer button gap and bottom padding are kept in both sets
- * so the footer never shrinks below its targets. */
+ * body content exceeds the available body height, before any
+ * scrolling. The footer button gap and bottom padding are fixed
+ * spec values in the footer itself (8 dp and 12 dp) and are not
+ * part of this choice: the footer is measured by the Scaffold
+ * outside the body's fit budget, so shrinking it would not save
+ * the body a scroll. */
 internal data class CreateGaps(
     val headerToRows: Dp,
     val betweenRows: Dp,
@@ -688,7 +760,7 @@ internal val NORMAL_GAPS = CreateGaps(
     betweenRows = 14.dp,
     advancedGap = 8.dp,
     requirementsGap = 16.dp,
-    listToHint = 8.dp,
+    listToHint = 12.dp,
     footerButtonGap = 8.dp,
     footerBottom = 12.dp
 )
@@ -703,19 +775,17 @@ internal val COMPACT_GAPS = CreateGaps(
     footerBottom = 8.dp
 )
 
-/** Estimated natural height of the waiting content at default
- * text, from the spec's fixed sizes: the 76 dp header, the 108 dp
+/** Estimated natural height of the BODY ONLY at default text,
+ * from the spec's fixed sizes: the 76 dp header, the 108 dp
  * address rows, the 48 dp Advanced target and role-swap hint, the
- * 20 dp requirements heading, the two 20 dp requirement lines,
- * and the footer (56 dp buttons, 12 dp bottom, plus the 18 dp
- * notice line when present). The app bar is measured by the
- * Scaffold and is not part of this. Pure so the fit decision is
+ * 20 dp requirements heading, and the two 20 dp requirement
+ * lines. The footer is deliberately not part of this: it is
+ * measured by the Scaffold in the bottom slot, and the body is
+ * given what is left. Pure so the fit decision is
  * unit-testable. */
-internal fun estimatedContentHeightDp(rows: Int, advanced: Boolean, notice: Boolean, gaps: CreateGaps): Dp {
+internal fun estimatedBodyHeightDp(rows: Int, advanced: Boolean, gaps: CreateGaps): Dp {
     val header = 76.dp
-    val footer = (if (notice) 18.dp + 8.dp else 0.dp) +
-        (if (advanced) 56.dp + gaps.footerButtonGap else 0.dp) + 56.dp + gaps.footerBottom
-    val body = if (advanced) {
+    return if (advanced) {
         header + gaps.headerToRows + 108.dp + gaps.requirementsGap +
             20.dp + 8.dp + 48.dp + gaps.listToHint + 48.dp
     } else {
@@ -723,16 +793,32 @@ internal fun estimatedContentHeightDp(rows: Int, advanced: Boolean, notice: Bool
             gaps.betweenRows * (rows - 1).coerceAtLeast(0) +
             gaps.advancedGap + 48.dp
     }
-    return body + footer
 }
 
-/** Pick the gap set for the available height: the normal gaps when
- * the content fits, the compact gaps first when it does not. The
- * body still scrolls on its own if the compact layout also
- * overflows (shorter windows, enlarged text). Pure so the fit
- * decision is unit-testable. */
-internal fun chooseGaps(availableHeightDp: Dp, rows: Int, advanced: Boolean, notice: Boolean): CreateGaps =
-    if (estimatedContentHeightDp(rows, advanced, notice, NORMAL_GAPS) <= availableHeightDp) NORMAL_GAPS
+/** Measured height of the footer at default text: the 56 dp
+ * buttons (Back to addresses above Stop in Advanced, with an
+ * 8 dp gap), the 12 dp below Stop, and the 18 dp notice line
+ * plus its 8 dp gap when the network changed. Pure so the fit
+ * budget is unit-testable. */
+internal fun estimatedFooterHeightDp(advanced: Boolean, notice: Boolean): Dp {
+    return (if (notice) 18.dp + 8.dp else 0.dp) +
+        (if (advanced) 56.dp + 8.dp else 0.dp) + 56.dp + 12.dp
+}
+
+/** The body's scroll range for a given content height against
+ * the body's measured height: zero whenever the content fits,
+ * so the body shows everything on entry with no scroll region.
+ * Pure so the zero-scroll fit is unit-testable. */
+internal fun bodyScrollRangeDp(contentHeightDp: Dp, availableHeightDp: Dp): Dp =
+    (contentHeightDp - availableHeightDp).coerceAtLeast(0.dp)
+
+/** Pick the gap set for the body's measured height: the normal
+ * gaps when the body content fits, the compact gaps first when
+ * it does not. The body still scrolls on its own if the compact
+ * layout also overflows (shorter windows, enlarged text). Pure
+ * so the fit decision is unit-testable. */
+internal fun chooseGaps(availableHeightDp: Dp, rows: Int, advanced: Boolean): CreateGaps =
+    if (estimatedBodyHeightDp(rows, advanced, NORMAL_GAPS) <= availableHeightDp) NORMAL_GAPS
     else COMPACT_GAPS
 
 /**

@@ -28,6 +28,18 @@ import org.junit.Test
  * the body and anchored above the bottom navigation; the gap set
  * compacts first when the content exceeds the available height,
  * before any body-only scrolling.
+ *
+ * v0.9.6 ("Fix Create Server screen fit"): the measurement fault
+ * is fixed — v0.9.5 had TWO weight(1f) siblings in one Column
+ * (the body with fill = false, and a flexible Spacer outside
+ * it), so the remaining space after the footer was split 50/50
+ * and the body was capped at half the available height. The body
+ * is now the single scrollable column filling the Scaffold's
+ * content area between the app bar (top slot) and the footer
+ * (bottom slot); the spacer is gone. The fit budget is body-only
+ * (the footer is measured by the Scaffold outside it), the
+ * role-swap hint is 12 dp below the list, and the scroll range
+ * is zero whenever the body content fits.
  */
 class HostRefinementsTest {
 
@@ -132,59 +144,113 @@ class HostRefinementsTest {
         assertEquals(14.dp, NORMAL_GAPS.betweenRows)
         assertEquals(8.dp, NORMAL_GAPS.advancedGap)
         assertEquals(16.dp, NORMAL_GAPS.requirementsGap)
-        assertEquals(8.dp, NORMAL_GAPS.listToHint)
+        assertEquals(12.dp, NORMAL_GAPS.listToHint)
         assertEquals(8.dp, NORMAL_GAPS.footerButtonGap)
         assertEquals(12.dp, NORMAL_GAPS.footerBottom)
     }
 
     @Test
-    fun testEstimatedContentHeightTwoAddressStandard() {
-        // 76 header + 24 gap + 2x108 rows + 14 between + 8 Advanced
-        // gap + 48 Advanced target + 56 Stop + 12 bottom = 454.
-        assertEquals(454.dp, estimatedContentHeightDp(2, false, false, NORMAL_GAPS))
+    fun testEstimatedBodyHeightTwoAddressStandard() {
+        // Body only (the footer is measured by the Scaffold
+        // outside it): 76 header + 24 gap + 2x108 rows + 14
+        // between + 8 Advanced gap + 48 Advanced target = 386.
+        assertEquals(386.dp, estimatedBodyHeightDp(2, false, NORMAL_GAPS))
     }
 
     @Test
-    fun testEstimatedContentHeightOneAddressStandard() {
-        // 76 + 24 + 108 + 8 + 48 + 56 + 12 = 332.
-        assertEquals(332.dp, estimatedContentHeightDp(1, false, false, NORMAL_GAPS))
+    fun testEstimatedBodyHeightOneAddressStandard() {
+        // 76 + 24 + 108 + 8 + 48 = 264.
+        assertEquals(264.dp, estimatedBodyHeightDp(1, false, NORMAL_GAPS))
     }
 
     @Test
-    fun testEstimatedContentHeightAdvanced() {
-        // 76 + 24 + 108 + 16 + 20 heading + 8 + 48 list + 8 hint +
-        // 48 role-swap + 56 Back + 8 + 56 Stop + 12 bottom = 488.
-        assertEquals(488.dp, estimatedContentHeightDp(1, true, false, NORMAL_GAPS))
+    fun testEstimatedBodyHeightAdvanced() {
+        // 76 + 24 + 108 + 16 + 20 heading + 8 + 48 list + 12
+        // hint gap + 48 role-swap hint = 360.
+        assertEquals(360.dp, estimatedBodyHeightDp(1, true, NORMAL_GAPS))
     }
 
     @Test
-    fun testEstimatedContentHeightNoticeAddsOneLine() {
-        // The footer notice is one 18 dp line plus an 8 dp gap.
-        assertEquals(480.dp, estimatedContentHeightDp(2, false, true, NORMAL_GAPS))
-        assertEquals(514.dp, estimatedContentHeightDp(1, true, true, NORMAL_GAPS))
+    fun testEstimatedFooterHeight() {
+        // Standard, no notice: 56 Stop + 12 below = 68.
+        assertEquals(68.dp, estimatedFooterHeightDp(false, false))
+        // The notice is one 18 dp line plus an 8 dp gap: +26.
+        assertEquals(94.dp, estimatedFooterHeightDp(false, true))
+        // Advanced adds Back to addresses (56) + 8 gap: 132.
+        assertEquals(132.dp, estimatedFooterHeightDp(true, false))
+        assertEquals(158.dp, estimatedFooterHeightDp(true, true))
     }
 
     @Test
-    fun testChooseGapsKeepsNormalWhenContentFits() {
-        assertEquals(NORMAL_GAPS, chooseGaps(600.dp, 2, false, false))
-        assertEquals(NORMAL_GAPS, chooseGaps(500.dp, 1, true, false))
+    fun testBodyScrollRangeIsZeroWhenContentFits() {
+        assertEquals(0.dp, bodyScrollRangeDp(386.dp, 476.dp))
+        assertEquals(0.dp, bodyScrollRangeDp(360.dp, 412.dp))
+        assertEquals(0.dp, bodyScrollRangeDp(264.dp, 264.dp))
     }
 
     @Test
-    fun testChooseGapsCompactsWhenContentExceeds() {
-        assertEquals(COMPACT_GAPS, chooseGaps(400.dp, 2, false, false))
-        assertEquals(COMPACT_GAPS, chooseGaps(450.dp, 1, true, false))
+    fun testBodyScrollRangeIsPositiveWhenContentOverflows() {
+        assertEquals(90.dp, bodyScrollRangeDp(476.dp, 386.dp))
+        assertEquals(1.dp, bodyScrollRangeDp(361.dp, 360.dp))
+    }
+
+    @Test
+    fun testChooseGapsKeepsNormalWhenBodyFits() {
+        assertEquals(NORMAL_GAPS, chooseGaps(476.dp, 2, false))
+        assertEquals(NORMAL_GAPS, chooseGaps(412.dp, 1, true))
+        assertEquals(NORMAL_GAPS, chooseGaps(386.dp, 2, false))
+    }
+
+    @Test
+    fun testChooseGapsCompactsWhenBodyExceeds() {
+        assertEquals(COMPACT_GAPS, chooseGaps(300.dp, 2, false))
+        assertEquals(COMPACT_GAPS, chooseGaps(350.dp, 1, true))
+        // Compact body heights: standard two-address 372,
+        // Advanced 342 — both still overflow a 300 dp body and
+        // then scroll on their own.
+        assertEquals(372.dp, estimatedBodyHeightDp(2, false, COMPACT_GAPS))
+        assertEquals(342.dp, estimatedBodyHeightDp(1, true, COMPACT_GAPS))
+        assertEquals(72.dp, bodyScrollRangeDp(372.dp, 300.dp))
+        assertEquals(42.dp, bodyScrollRangeDp(342.dp, 300.dp))
     }
 
     @Test
     fun testChooseGapsFits360x720() {
-        // 360x720 dp portrait: roughly 720 - 72 app bar - 24 status
-        // bar - 80 bottom navigation = ~544 dp for body + footer.
-        // Both the two-address standard view (454) and Advanced
-        // (488) fit with the normal gaps, no scrolling needed.
-        assertEquals(NORMAL_GAPS, chooseGaps(544.dp, 2, false, false))
-        assertEquals(NORMAL_GAPS, chooseGaps(544.dp, 1, true, false))
-        assertEquals(NORMAL_GAPS, chooseGaps(544.dp, 1, false, false))
+        // 360x720 dp portrait: the Scaffold's content area is
+        // roughly 720 - 24 status bar - 72 app bar - 80 bottom
+        // navigation = 544 dp for body + footer. The body's share
+        // is that minus the footer's measured height: standard
+        // 544 - 68 = 476, Advanced 544 - 132 = 412, and with the
+        // notice present 450 and 386. Every view fits with the
+        // normal gaps and zero scroll range — this is the
+        // v0.9.5 fault's failing case: the old two-weight layout
+        // capped the body at half of 476 (238 dp) and clipped
+        // the second row, while the other half sat empty.
+        assertEquals(NORMAL_GAPS, chooseGaps(476.dp, 2, false))
+        assertEquals(NORMAL_GAPS, chooseGaps(476.dp, 1, false))
+        assertEquals(NORMAL_GAPS, chooseGaps(412.dp, 1, true))
+        assertEquals(NORMAL_GAPS, chooseGaps(450.dp, 2, false))
+        assertEquals(NORMAL_GAPS, chooseGaps(386.dp, 1, true))
+        assertEquals(0.dp, bodyScrollRangeDp(386.dp, 476.dp))
+        assertEquals(0.dp, bodyScrollRangeDp(360.dp, 412.dp))
+        assertEquals(0.dp, bodyScrollRangeDp(360.dp, 386.dp))
+        assertEquals(0.dp, bodyScrollRangeDp(264.dp, 450.dp))
+    }
+
+    @Test
+    fun testChooseGapsFitsScreenshotDeviceSize() {
+        // The screenshot's device (Nothing Phone (2), about
+        // 411x919 dp): content area roughly 919 - 24 - 72 - 80
+        // = 743 dp. Body shares: standard 743 - 68 = 675,
+        // Advanced 743 - 132 = 611, and with the notice 649 and
+        // 585. All fit with normal gaps and zero scroll range.
+        assertEquals(NORMAL_GAPS, chooseGaps(675.dp, 2, false))
+        assertEquals(NORMAL_GAPS, chooseGaps(675.dp, 1, false))
+        assertEquals(NORMAL_GAPS, chooseGaps(611.dp, 1, true))
+        assertEquals(NORMAL_GAPS, chooseGaps(649.dp, 2, false))
+        assertEquals(NORMAL_GAPS, chooseGaps(585.dp, 1, true))
+        assertEquals(0.dp, bodyScrollRangeDp(386.dp, 675.dp))
+        assertEquals(0.dp, bodyScrollRangeDp(360.dp, 611.dp))
     }
 
     @Test
