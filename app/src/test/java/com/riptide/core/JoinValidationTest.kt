@@ -406,30 +406,6 @@ class JoinValidationTest {
         assertNull(parseJoinLink(""))
     }
 
-    // Share links: bracketed IPv6, plain IPv4, optional device name.
-    @Test
-    fun shareLinkBuilding() {
-        assertEquals(
-            "riptide://join?host=[2001:db8::1]&port=50000",
-            buildJoinLink("2001:db8::1", AddressFamily.IPV6)
-        )
-        assertEquals(
-            "riptide://join?host=192.168.1.20&port=50000",
-            buildJoinLink("192.168.1.20", AddressFamily.IPV4)
-        )
-        assertEquals(
-            "riptide://join?host=203.0.113.10&port=50000",
-            buildJoinLink("203.0.113.10", AddressFamily.IPV4)
-        )
-        val withName = buildJoinLink("192.168.1.20", AddressFamily.IPV4, "Mohak's Phone")
-        assertEquals(JoinLink("192.168.1.20", 50000, "Mohak's Phone"), parseJoinLink(withName))
-        // Round trip: a built link parses back to the same host.
-        assertEquals(
-            JoinLink("2001:db8::1", 50000, null),
-            parseJoinLink(buildJoinLink("2001:db8::1", AddressFamily.IPV6, "  "))
-        )
-    }
-
     // Copy: bare address, brackets stripped, port omitted.
     @Test
     fun copyText() {

@@ -1,8 +1,7 @@
 package com.riptide.ui.host
 
 import androidx.compose.ui.unit.dp
-import com.riptide.core.AddressFamily
-import com.riptide.core.buildJoinLink
+import androidx.compose.ui.unit.sp
 import com.riptide.core.copyTextFor
 import com.riptide.util.derive6DigitCode
 import org.junit.Assert.assertEquals
@@ -40,6 +39,15 @@ import org.junit.Test
  * (the footer is measured by the Scaffold outside it), the
  * role-swap hint is 12 dp below the list, and the scroll range
  * is zero whenever the body content fits.
+ *
+ * v0.9.7 ("Create Server header sizing" + Share sends the bare
+ * address): the code value is 28 sp monospace on one line inside
+ * the 148 dp tile (7 chars x 0.6em = 117.6 dp + 24 dp padding =
+ * 141.6 dp, so it fits at default text; the tile grows wider
+ * only when enlarged text needs it) and the radio icon is 36 dp,
+ * centered against the two-line status. Share sends only the
+ * row's bare address as plain text — no riptide:// link, no
+ * port, no device name, no code — the same string Copy uses.
  */
 class HostRefinementsTest {
 
@@ -254,20 +262,60 @@ class HostRefinementsTest {
     }
 
     @Test
-    fun testShareLinksCarryEachRowsOwnAddress() {
+    fun testHeaderSizes() {
+        assertEquals(36.dp, RADIO_ICON_SIZE)
+        assertEquals(28.sp, CODE_VALUE_FONT_SIZE)
+        assertEquals(32.sp, CODE_VALUE_LINE_HEIGHT)
+    }
+
+    @Test
+    fun testVerificationCodeFitsTileAtDefaultText() {
+        // 7 monospace chars at 28 sp: 7 x 0.6 x 28 = 117.6 dp.
+        // The 148 dp tile has 12 dp padding each side, so
+        // 117.6 + 24 = 141.6 dp fits with 6.4 dp to spare.
+        assertEquals(117.6f, verificationCodeWidthDp(28f, 1f), 0.001f)
+        assertTrue(verificationCodeFitsTile(28f, 1f))
+        // The old 20 sp value was smaller still.
+        assertEquals(84f, verificationCodeWidthDp(20f, 1f), 0.001f)
+        assertTrue(verificationCodeFitsTile(20f, 1f))
+    }
+
+    @Test
+    fun testVerificationCodeOutgrowsTileAtEnlargedText() {
+        // At 1.3x font scale the 28 sp code is 152.9 dp wide and
+        // needs 176.9 dp with padding, so it no longer fits the
+        // 148 dp reference tile — the tile grows wider instead
+        // of clipping the code.
+        assertEquals(152.88f, verificationCodeWidthDp(28f, 1.3f), 0.01f)
+        assertTrue(!verificationCodeFitsTile(28f, 1.3f))
+        // Even at 1.15x it is already too wide: 135.2 + 24.
+        assertTrue(!verificationCodeFitsTile(28f, 1.15f))
+    }
+
+    @Test
+    fun testShareSendsEachRowsOwnBareAddress() {
         val v6 = "2001:db8:7f47:e96:e47e:1cff:fe96:ab5f"
         val lan = "192.168.1.20"
         val pub = "203.0.113.10"
-        val v6Link = buildJoinLink(v6, AddressFamily.IPV6)
-        val lanLink = buildJoinLink(lan, AddressFamily.IPV4)
-        val pubLink = buildJoinLink(pub, AddressFamily.IPV4)
-        assertEquals("riptide://join?host=[$v6]&port=50000", v6Link)
-        assertEquals("riptide://join?host=$lan&port=50000", lanLink)
-        assertEquals("riptide://join?host=$pub&port=50000", pubLink)
-        // No row's link carries another row's address.
-        assertTrue(!v6Link.contains(lan) && !v6Link.contains(pub))
-        assertTrue(!lanLink.contains(v6) && !lanLink.contains(pub))
-        assertTrue(!pubLink.contains(v6) && !pubLink.contains(lan))
+        val v6Shared = shareTextForAddressValue("[$v6]")
+        val lanShared = shareTextForAddressValue(lan)
+        val pubShared = shareTextForAddressValue(pub)
+        // Exactly the bare address, the same string Copy uses.
+        assertEquals(v6, v6Shared)
+        assertEquals(lan, lanShared)
+        assertEquals(pub, pubShared)
+        // No link, no port, no device name, no code in the text.
+        for (shared in listOf(v6Shared, lanShared, pubShared)) {
+            assertTrue(!shared.contains("://"))
+            assertTrue(!shared.contains("riptide"))
+            assertTrue(!shared.contains("port"))
+            assertTrue(!shared.contains("50000"))
+            assertTrue(!shared.contains("join"))
+        }
+        // No row's text carries another row's address.
+        assertTrue(!v6Shared.contains(lan) && !v6Shared.contains(pub))
+        assertTrue(!lanShared.contains(v6) && !lanShared.contains(pub))
+        assertTrue(!pubShared.contains(v6) && !pubShared.contains(lan))
     }
 
     @Test

@@ -4,7 +4,6 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URLDecoder
-import java.net.URLEncoder
 
 /** Address family of a literal address. */
 enum class AddressFamily { IPV4, IPV6 }
@@ -291,9 +290,11 @@ fun classifyResolved(addresses: List<InetAddress>, capability: DeviceCapability)
     return ResolvedCandidates.Unsupported(family)
 }
 
-/** A shared link: riptide://join?host=<address>&port=50000, with an
- * optional percent-encoded device name. Never carries a fingerprint
- * or a code. */
+/** A join deep link, accepted on intake: riptide://join?host=<address>,
+ * with an optional port (defaults to 50000; any other explicit port
+ * is rejected) and an optional percent-encoded device name. Never
+ * carries a fingerprint or a code. Share no longer builds these:
+ * it sends the row's bare address as plain text. */
 data class JoinLink(val host: String, val port: Int = SESSION_PORT, val name: String? = null)
 
 /** Parse a deep link. Returns null for anything that is not a
@@ -327,14 +328,6 @@ private fun urlDecode(s: String): String? = try {
     URLDecoder.decode(s, "UTF-8")
 } catch (_: Exception) {
     null
-}
-
-/** Build the share link for one address row. IPv6 is bracketed. */
-fun buildJoinLink(address: String, family: AddressFamily, deviceName: String? = null): String {
-    val hostPart = if (family == AddressFamily.IPV6) "[$address]" else address
-    val namePart = deviceName?.trim()?.takeIf { it.isNotEmpty() }
-        ?.let { "&name=" + URLEncoder.encode(it, "UTF-8") } ?: ""
-    return "riptide://join?host=$hostPart&port=$SESSION_PORT$namePart"
 }
 
 /** Copy writes the bare address: brackets stripped, port omitted. */

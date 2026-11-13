@@ -20,3 +20,4 @@ Source of truth: PC `src/riptide/core/session.py` and `identity.py`, v1.3.
   4. PC verifies the signature against the presented certificate, computes the fingerprint from the certificate DER, never from a sent string, and only then asks for approval.
   5. PC replies hello_ok with its device name, or error.
 - Trust: Known means fingerprint matches a saved peer, Changed means a saved device label now has a different fingerprint and must never be silently replaced, New means first connect.
+- Android sharing: each address row's Share sends only that row's bare address as plain text (IPv6 with brackets stripped, no port, no scheme, no device name, no code). The riptide://join deep link is still accepted on intake (old links carrying &port=50000 still parse; any other explicit port is rejected); it never carries a fingerprint or code.

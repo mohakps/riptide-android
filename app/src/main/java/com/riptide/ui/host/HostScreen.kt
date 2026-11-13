@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -84,6 +85,38 @@ internal val CODE_TILE_MIN_HEIGHT = 76.dp
 internal val ACTION_COLUMN_WIDTH = 72.dp
 internal val ROW_MIN_HEIGHT = 108.dp
 
+/** Radio broadcast icon size (v0.9.7): 36 dp, centered vertically
+ * against the two-line status, 10 dp gap. */
+internal val RADIO_ICON_SIZE = 36.dp
+
+/** Verification code value size (v0.9.7): 28 sp, monospace, one
+ * line. The "MY CODE" label stays 11 sp and the Copy glyph 16 dp. */
+internal val CODE_VALUE_FONT_SIZE = 28.sp
+internal val CODE_VALUE_LINE_HEIGHT = 32.sp
+
+/** Monospace advance: every glyph, the hyphen included, is 0.6em
+ * wide, so the 7-character code ("123-456") is 7 x 0.6 x its
+ * font size wide. Pure so the tile-fit rule is unit-testable. */
+internal const val MONOSPACE_ADVANCE_RATIO = 0.6f
+internal const val VERIFICATION_CODE_LENGTH = 7
+
+/** Width in dp of the verification code at the given font size
+ * (in sp) and font scale. */
+internal fun verificationCodeWidthDp(codeFontSizeSp: Float, fontScale: Float): Float =
+    VERIFICATION_CODE_LENGTH * MONOSPACE_ADVANCE_RATIO * codeFontSizeSp * fontScale
+
+/** True when the code fits inside the tile at the given font size
+ * and font scale: its width plus the tile's horizontal padding
+ * (12 dp each side) must not exceed the tile width. At default
+ * text 28 sp needs 117.6 + 24 = 141.6 dp of the 148 dp tile. */
+internal fun verificationCodeFitsTile(
+    codeFontSizeSp: Float,
+    fontScale: Float,
+    tileWidthDp: Float = 148f,
+    tileHorizontalPaddingDp: Float = 24f
+): Boolean =
+    verificationCodeWidthDp(codeFontSizeSp, fontScale) + tileHorizontalPaddingDp <= tileWidthDp
+
 /**
  * Create Server (C1-C8). Layout ownership (v0.9.6, "Fix Create
  * Server screen fit"): ONE screen layout with an app bar, a body,
@@ -101,10 +134,11 @@ internal val ROW_MIN_HEIGHT = 108.dp
  * the body is a single scrollable column that fills the content
  * area, its content placed at the top, and any unused height
  * follows its last item WITHIN the body. The header is ONE
- * horizontal row — the waiting group (coral 28 dp radio glyph
+ * horizontal row — the waiting group (coral 36 dp radio glyph
  * left of the two-line status, 10 dp gap) vertically centered
- * beside the ivory code tile (148x76 dp at the reference width)
- * at the right edge; 24 dp from the header to the first address
+ * beside the ivory code tile (148x76 dp at the reference width,
+ * code value 28 sp monospace on one line; the tile grows past
+ * 148 dp wide only if enlarged text needs it) at the right edge; 24 dp from the header to the first address
  * row; address rows of three separate rounded rectangles
  * (address cell #1C1C1C with 16 dp corners and 16 dp horizontal
  * padding, 72 dp action column, Copy #1C1C1C above Share #FF6B6B,
@@ -160,13 +194,17 @@ fun HostScreen(
         scope.launch { snackbarHostState.showSnackbar("My code copied") }
     }
 
+    /** Share sends only the row's bare address as plain text —
+     * the same string Copy uses (brackets stripped, no port, no
+     * scheme, no link, no device name, no code). The 6-digit code
+     * stays out-of-band. */
     fun shareAddress(address: String, family: AddressFamily) {
-        val link = viewModel.shareLinkFor(address, family)
+        val text = viewModel.shareTextForAddress(address)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, link)
+            putExtra(Intent.EXTRA_TEXT, text)
         }
-        context.startActivity(Intent.createChooser(intent, "Share join link"))
+        context.startActivity(Intent.createChooser(intent, "Share address"))
     }
 
     Scaffold(
@@ -321,7 +359,7 @@ private fun WaitingHostBody(
                 .padding(horizontal = 24.dp)
         ) {
                 // Header: ONE horizontal row. The waiting group
-                // (28 dp coral radio glyph, 10 dp gap, two-line
+                // (36 dp coral radio glyph, 10 dp gap, two-line
                 // 20/24 sp medium status) is vertically centered
                 // beside the ivory code tile at the right edge.
                 // The row is 76 dp minimum (the tile's height) and
@@ -338,7 +376,7 @@ private fun WaitingHostBody(
                         Icon(
                             painter = painterResource(R.drawable.riptide_signal),
                             contentDescription = null,
-                            modifier = Modifier.size(28.dp),
+                            modifier = Modifier.size(RADIO_ICON_SIZE),
                             tint = RiptideColors.Primary
                         )
                         Spacer(modifier = Modifier.width(10.dp))
@@ -356,12 +394,16 @@ private fun WaitingHostBody(
                     Spacer(modifier = Modifier.width(16.dp))
                     // My code tile: ivory, 148x76 dp at the
                     // reference width, 22 dp corners, allowed to
-                    // grow at enlarged text. The WHOLE tile is one
-                    // tap target that copies the displayed code,
-                    // hyphen included; the single accessibility
-                    // action is "Copy verification code".
+                    // grow at enlarged text. The width is a
+                    // minimum: at default text the 28 sp code
+                    // (117.6 dp) fits inside it, and only enlarged
+                    // text grows it wider instead of clipping the
+                    // code. The WHOLE tile is one tap target that
+                    // copies the displayed code, hyphen included;
+                    // the single accessibility action is
+                    // "Copy verification code".
                     Box(
-                        modifier = Modifier.width(CODE_TILE_WIDTH).heightIn(min = CODE_TILE_MIN_HEIGHT)
+                        modifier = Modifier.widthIn(min = CODE_TILE_WIDTH).heightIn(min = CODE_TILE_MIN_HEIGHT)
                             .clip(RoundedCornerShape(22.dp))
                             .background(RiptideColors.CodeContainer, RoundedCornerShape(22.dp))
                             .clickable(onClickLabel = "Copy verification code") { onCopyCode() }
@@ -381,9 +423,10 @@ private fun WaitingHostBody(
                                 text = uiState.myCode,
                                 color = RiptideColors.OnCodeContainer,
                                 fontFamily = FontFamily.Monospace,
-                                fontSize = 20.sp,
-                                lineHeight = 24.sp,
-                                fontWeight = FontWeight.Medium
+                                fontSize = CODE_VALUE_FONT_SIZE,
+                                lineHeight = CODE_VALUE_LINE_HEIGHT,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1
                             )
                         }
                         Icon(

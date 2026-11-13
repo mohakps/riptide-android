@@ -26,9 +26,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Shared join link: riptide://join?host=<address>&port=50000.
+            <!-- Join deep link (intake): riptide://join?host=<address>.
                  Opens Join with the address prefilled; never carries a
-                 fingerprint or code. -->
+                 fingerprint or code. Share sends the row's bare
+                 address as plain text, not this link. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
