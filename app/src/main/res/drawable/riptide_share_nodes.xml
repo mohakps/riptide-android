@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Connected-node Share glyph (v0.9.4): exact geometry from the
-     approved waiting.svg/advanced.svg — three nodes joined by two
-     lines. White; the Share cell supplies the #E04449 background.
+<!-- Connected-node Share glyph (v0.9.5): EXACT conversion of the
+     supplied share-icon.svg (24x24 viewBox, white #FFFFFF stroke,
+     width 1.8, round caps): two connecting lines
+     M8.16 10.74L15.84 6.26 and M8.16 13.26L15.84 17.74, and three
+     r=2.5 circles at (6,12), (18,5), (18,19), filled white. The
+     Share cell supplies the signature coral #FF6B6B background.
      The old riptide_share drawable is an upload arrow and is NOT
-     this glyph; do not substitute it here. -->
+     this glyph; do not substitute it here. Note the v0.9.4 version
+     of this file had the second line wrong (it ran to y=21.8);
+     this file is rebuilt from the supplied SVG. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-  <path android:pathData="M8.2 10.6L15.8 6.4M8.2 17.6L15.8 21.8" android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" />
+  <path android:pathData="M8.16 10.74L15.84 6.26M8.16 13.26L15.84 17.74" android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" />
   <path android:pathData="M3.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0" android:fillColor="#FFFFFFFF" />
   <path android:pathData="M15.5 5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0" android:fillColor="#FFFFFFFF" />
   <path android:pathData="M15.5 19a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0" android:fillColor="#FFFFFFFF" />

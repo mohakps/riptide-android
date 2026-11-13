@@ -30,9 +30,6 @@ object RiptideColors {
     val Error = Color(0xFFFF6B6B)
     val CodeContainer = Color(0xFFF2F0EB)
     val OnCodeContainer = Color(0xFF101010)
-    /** Create Server Share cell (v0.9.4): full #E04449, white glyph.
-     * Deliberately not the coral Primary (#FF6B6B). */
-    val ShareRed = Color(0xFFE04449)
     /** Address-cell heading (v0.9.4): #CBC6C0, between OnSurface
      * and OnSurfaceVariant. */
     val HeadingMuted = Color(0xFFCBC6C0)
