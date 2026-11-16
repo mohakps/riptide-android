@@ -65,6 +65,9 @@ class HomeViewModel(private val session: SessionManager? = null) : ViewModel() {
             viewModelScope.launch {
                 s.error.collect { e -> _uiState.update { st -> st.copy(connectionError = e) } }
             }
+            viewModelScope.launch {
+                s.batch.collect { b -> _uiState.update { it.copy(outgoingQueue = b) } }
+            }
         }
     }
 
@@ -148,6 +151,36 @@ class HomeViewModel(private val session: SessionManager? = null) : ViewModel() {
 
     fun onApprovalHandled() {
         _uiState.update { it.copy(approvalRequest = null) }
+    }
+
+    /** Open the File queue sheet. */
+    fun openQueueSheet() {
+        _uiState.update { it.copy(queueSheetOpen = true) }
+    }
+
+    /** Close the File queue sheet. Files removed inside it leave the
+     * queue (Undo was only available while it was open); dismissing
+     * with nothing included drops the whole staged queue, and Home
+     * shows the regular full-width device-info area again. */
+    fun closeQueueSheet() {
+        val queue = _uiState.value.outgoingQueue
+        if (queue != null) {
+            if (queue.includedCount == 0) session?.purgeQueue()
+            else session?.purgeExcludedItems()
+        }
+        _uiState.update { it.copy(queueSheetOpen = false) }
+    }
+
+    /** Remove a file in the File queue sheet (coral ×): it stays in
+     * place, struck through, with Undo, and the Home count drops. */
+    fun excludeQueueItem(id: String) {
+        session?.setQueueItemExcluded(id, true)
+    }
+
+    /** Undo a removal in the File queue sheet: the file returns to
+     * its original position and the count rises. */
+    fun includeQueueItem(id: String) {
+        session?.setQueueItemExcluded(id, false)
     }
 
     fun onForgetPeer(peer: SavedPeer) {

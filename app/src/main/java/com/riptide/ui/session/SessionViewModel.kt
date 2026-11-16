@@ -9,6 +9,7 @@ import com.riptide.ui.model.ActiveTransfer
 import com.riptide.ui.model.BusyPhase
 import com.riptide.ui.model.DownloadState
 import com.riptide.ui.model.SessionUiState
+import com.riptide.ui.model.TransferDirection
 import com.riptide.ui.model.TransferRecord
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -79,10 +80,19 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
     }
 
     private fun recompute(state: SessionUiState): SessionUiState {
+        // Appending to the outgoing queue is allowed while connected:
+        // the runner serializes files one at a time, and new files
+        // join the bottom of the queue. Blocked only while a receive
+        // is in flight (the engine cannot send while the reader is
+        // mid-payload), while a transfer cancel is settling, or while
+        // a download is waiting. The busy phase and active transfer
+        // belong to the running queue itself in that case, so they do
+        // not block an append.
+        val queueRunning = state.batchState?.running == true
         val canStart = state.isConnected &&
-            state.activeTransfer == null &&
-            state.busyPhase == null &&
-            state.batchState == null &&
+            state.activeTransfer?.direction != TransferDirection.RECEIVE &&
+            (state.busyPhase == null || queueRunning) &&
+            (state.batchState == null || queueRunning) &&
             !state.isCancellingTransfer &&
             state.downloadState !is DownloadState.Waiting
         return state.copy(canStartTransfer = canStart)

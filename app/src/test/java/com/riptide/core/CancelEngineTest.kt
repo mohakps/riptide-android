@@ -174,4 +174,31 @@ class CancelEngineTest : LoopbackTestBase() {
         assertFalse(session.cancelTransfer())
         assertFalse(session.cancellingTransfer.value)
     }
+
+    /**
+     * A file queued while a cancel is still settling must not vanish:
+     * it appends to the running batch, and the runner's
+     * finishBatchCancelled must keep it as a staged queue that sends
+     * next, not drop it with the finished run. (Regression test for
+     * the flaky follow-up in testSenderCancelKeepsSessionOpen: the
+     * same drop happened when the follow-up landed in the window
+     * between the cancel's history entry and the runner finishing.)
+     */
+    @Test
+    fun testFileQueuedDuringCancelSettlesSendsNext() {
+        assertTrue(connectAndApprove())
+        val file = makeFile("big-send.bin", 32 * 1024 * 1024)
+        session.sendFile(TestFileProvider.uriFor(file))
+        assertTrue(waitFor(10_000) { (session.active.value?.transferredBytes ?: 0L) > 0 })
+        assertTrue(session.cancelTransfer())
+        // Queue the follow-up while the cancel is still settling
+        // (the sender is padding zeros and waiting for cancel_ack),
+        // so it lands in the running batch.
+        val followUp = makeFile("after-cancel-2.txt", 2048)
+        session.sendFile(TestFileProvider.uriFor(followUp))
+        assertTrue(waitForHistory("big-send.bin", TransferStatus.CANCELLED))
+        assertTrue(waitForHistory("after-cancel-2.txt", TransferStatus.SUCCESS))
+        assertTrue(waitFor(10_000) { peer.receivedFiles.containsKey("after-cancel-2.txt") })
+        assertEquals(ConnectionState.CONNECTED, session.connection.value)
+    }
 }

@@ -100,16 +100,31 @@ fun HomeScreen(
                 .padding(horizontal = gutter)
             Column(modifier = contentModifier) {
                 Spacer(modifier = Modifier.height(24.dp))
-                StackedDeviceIdentity(
-                    deviceName = uiState.myDeviceName.ifBlank { "This Phone" },
-                    code = uiState.myCode,
-                    onCopyCode = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Riptide Code", uiState.myCode.filter { it.isDigit() }))
-                        scope.launch { snackbarHostState.showSnackbar("Verification code copied") }
-                    },
-                    onShowFingerprint = onShowFingerprint
-                )
+                val onCopyCode: () -> Unit = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Riptide Code", uiState.myCode.filter { it.isDigit() }))
+                    scope.launch { snackbarHostState.showSnackbar("Verification code copied") }
+                }
+                val queue = uiState.outgoingQueue
+                if (queue != null && queue.includedCount > 0) {
+                    // Files are queued: the device-info slot becomes
+                    // the two-panel switch (queue / device info).
+                    QueueDevicePanel(
+                        queue = queue,
+                        deviceName = uiState.myDeviceName.ifBlank { "This Phone" },
+                        code = uiState.myCode,
+                        onCopyCode = onCopyCode,
+                        onShowFingerprint = onShowFingerprint,
+                        onViewQueue = { viewModel.openQueueSheet() }
+                    )
+                } else {
+                    StackedDeviceIdentity(
+                        deviceName = uiState.myDeviceName.ifBlank { "This Phone" },
+                        code = uiState.myCode,
+                        onCopyCode = onCopyCode,
+                        onShowFingerprint = onShowFingerprint
+                    )
+                }
                 // Final blank gap: 32 dp from the widgets' bottom to the top
                 // of the Join heading's 40 dp line box. Do not add 16 more.
                 Spacer(modifier = Modifier.height(ApprovedRiptideTokens.IdentityToJoinGap))
@@ -311,6 +326,14 @@ fun HomeScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(24.dp))
+            }
+            if (uiState.queueSheetOpen) {
+                FileQueueSheet(
+                    queueItems = uiState.outgoingQueue?.items ?: emptyList(),
+                    onRemove = { viewModel.excludeQueueItem(it) },
+                    onUndo = { viewModel.includeQueueItem(it) },
+                    onClose = { viewModel.closeQueueSheet() }
+                )
             }
         }
     }

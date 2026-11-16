@@ -27,6 +27,10 @@ import com.riptide.ui.theme.ApprovedRiptideTokens as T
  * Stateless approved identity composition. No socket, persistence or clipboard side effects.
  * The route supplies live data and handles callbacks. Copy supplied drawable XMLs into res/drawable.
  * There is intentionally no outer card around these three widgets.
+ * [forceHorizontal] keeps the code and fingerprint tiles side by side
+ * regardless of width or font scale: the Home queue panel needs the
+ * composition at a stable 188 dp height while it slides, so the
+ * narrow-width vertical stack must not engage mid-animation.
  */
 @Composable
 fun StackedDeviceIdentity(
@@ -35,6 +39,7 @@ fun StackedDeviceIdentity(
     onCopyCode: () -> Unit,
     onShowFingerprint: () -> Unit,
     modifier: Modifier = Modifier,
+    forceHorizontal: Boolean = false,
 ) {
     val fontScale = LocalDensity.current.fontScale
     val shape = RoundedCornerShape(T.WidgetRadius)
@@ -58,7 +63,7 @@ fun StackedDeviceIdentity(
         }
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             // Adapt only when needed for accessible text/narrow windows; reference uses a weighted Row.
-            if (fontScale > 1.2f || maxWidth < 300.dp) {
+            if (!forceHorizontal && (fontScale > 1.2f || maxWidth < 300.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(T.IdentityGap)) {
                     ApprovedCodeTile(code, onCopyCode, Modifier.fillMaxWidth())
                     ApprovedFingerprintTile(onShowFingerprint, Modifier.fillMaxWidth())

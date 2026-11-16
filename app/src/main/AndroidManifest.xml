@@ -12,6 +12,7 @@
     <application
         android:name=".RiptideApp"
         android:allowBackup="false"
+        android:appCategory="productivity"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Riptide"
@@ -35,6 +36,15 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="riptide" android:host="join" />
+            </intent-filter>
+            <!-- Android Share intake: appears in the share menu as
+                 "Riptide". One file (SEND) or several (SEND_MULTIPLE);
+                 the streams arrive in EXTRA_STREAM. -->
+            <intent-filter android:label="Riptide">
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
         <service

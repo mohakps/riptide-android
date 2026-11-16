@@ -239,6 +239,7 @@ fun BatchTransferPanel(
                 }
                 Button(
                     onClick = onCancelBatch,
+                    enabled = !batch.cancelling,
                     shape = RoundedCornerShape(28.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = RiptideColors.SurfaceRaised,
@@ -246,7 +247,10 @@ fun BatchTransferPanel(
                     ),
                     modifier = Modifier.heightIn(min = 48.dp)
                 ) {
-                    Text("Cancel batch", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        if (batch.cancelling) "Cancelling…" else "Cancel batch",
+                        fontSize = 15.sp, fontWeight = FontWeight.Medium
+                    )
                 }
             }
             if (detailsExpanded) {

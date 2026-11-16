@@ -147,9 +147,13 @@ class SessionManager(private val context: Context) {
     /** Non-null while preparing, verifying or waiting for a send ack. Blocks a second transfer. */
     private val _busyPhase = MutableStateFlow<BusyPhase?>(null)
     val busyPhase: StateFlow<BusyPhase?> = _busyPhase.asStateFlow()
-    /** The running outgoing batch, or null when no batch is active. A
-     * single send leaves this null and uses [_active]/[_busyPhase]
-     * only; a batch holds the slot through every file. */
+    /** The outgoing queue, or null when no files are queued. One
+     * model drives both the Home OUTGOING QUEUE panel and the Session
+     * screen queue: a single send is a queue of one, picker batches
+     * and shared files append at the bottom, and the runner sends in
+     * order, one file at a time. A staged queue (files shared before
+     * a connection) exists with running false; it survives a
+     * deliberate disconnect and sends when the user reconnects. */
     private val _batch = MutableStateFlow<BatchState?>(null)
     val batch: StateFlow<BatchState?> = _batch.asStateFlow()
     /** Outcome of the last finished batch ("Batch sent · 5 files"),
@@ -278,6 +282,17 @@ class SessionManager(private val context: Context) {
 
     init {
         DiagLog.log("session", "SessionManager created")
+        // Sweep orphaned send spools from an earlier process: a
+        // staged share that died with the process is gone with the
+        // in-memory queue, and its spool must not leak in cacheDir.
+        // No send is live at construction, so every send-*.tmp here
+        // is an orphan by definition.
+        try {
+            context.cacheDir.listFiles { f -> f.name.startsWith("send-") && f.name.endsWith(".tmp") }
+                ?.forEach { if (it.delete()) DiagLog.log("session", "swept orphan spool ${it.name}") }
+        } catch (e: Exception) {
+            DiagLog.log("session", "spool sweep failed: ${e.message}")
+        }
         scope.launch {
             _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
             _receivedHistory.value = receivedHistoryRepo.load()
@@ -607,6 +622,10 @@ class SessionManager(private val context: Context) {
                 startSessionService()
                 startReader(session)
                 startHeartbeat(session)
+                // A staged queue (files shared or picked before the
+                // connection) sends now. The reader is up, so the
+                // runner's pre-flight ping gets its pong.
+                maybeStartOutgoingQueue()
             } catch (e: Exception) {
                 if (generation != attemptGeneration) return@launch
                 DiagLog.log("session", "connect failed: ${e::class.simpleName}: ${e.message}")
@@ -656,6 +675,8 @@ class SessionManager(private val context: Context) {
         startSessionService()
         startReader(session)
         startHeartbeat(session)
+        // A staged queue sends now, exactly like a dialled session.
+        maybeStartOutgoingQueue()
     }
 
     /** Deliberate disconnect. The cleanup runs in a coroutine, so a
@@ -722,7 +743,15 @@ class SessionManager(private val context: Context) {
                 _downloadState.value = DownloadState.Idle
                 _connection.value = ConnectionState.IDLE
                 _active.value = null
-                _batch.value = null
+                // A staged queue survives a disconnect: its files were
+                // never sent, and they send when the user reconnects.
+                // A running queue is dead with the socket: drop it and
+                // delete the spools of files that never started.
+                val batch = _batch.value
+                if (batch != null && batch.running) {
+                    deleteUnsentSpools(batch.items)
+                    _batch.value = null
+                }
             }
         }
     }
@@ -1528,25 +1557,200 @@ class SessionManager(private val context: Context) {
         } catch (_: Exception) { null }
     }
 
+    /** Send one file from a content URI: a queue of one. The file
+     * appends to the outgoing queue (at the bottom) and sends at
+     * once when connected; a file picked while a queue is running
+     * waits behind it. */
     fun sendFile(uri: Uri) {
-        if (_active.value != null || _busyPhase.value != null || _batch.value != null) {
-            _transferError.value = "A transfer is already in progress"
-            return
+        enqueueOutgoing(listOf(uri))
+    }
+
+    /** Send several files as one queue, in the given order. New
+     * files append at the bottom of any queue already running. */
+    fun sendBatch(uris: List<Uri>) {
+        enqueueOutgoing(uris)
+    }
+
+    /** Append files to the outgoing queue and start the runner when
+     * the session can take them. When not connected the files stay
+     * staged on Home and send when the session connects; when
+     * offline entirely they stay staged until the user joins. A
+     * staged queue never touches the socket. */
+    fun enqueueOutgoing(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        // Retain access to the selected URIs for the lifetime of the
+        // queue: the picker's transient permission can lapse while
+        // the queue is still sending.
+        uris.forEach { uri ->
+            try { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
         }
-        // Never write to a socket that is not a live session. The reader
-        // closes the socket when the session dies, so a stale non-null
-        // socket used to produce "send failed: Broken pipe (0 bytes sent)"
-        // on Home after the session was already gone.
-        if (_connection.value != ConnectionState.CONNECTED || socket == null) {
-            _transferError.value = "Not connected. Join the PC and try again."
-            return
+        val items = uris.map { uri ->
+            BatchItem(
+                id = UUID.randomUUID().toString(),
+                uri = uri.toString(),
+                name = resolveUriName(uri),
+                providerSize = resolveUriSize(uri)
+            )
+        }
+        // Atomic append: a plain read-then-set could resurrect a
+        // batch the runner just finished (running=true, no runner),
+        // stranding the new file. The update retries against a
+        // concurrent finish, so the file either joins the live batch
+        // or starts a fresh one.
+        _batch.update { current ->
+            if (current == null) {
+                BatchState(items = items)
+            } else {
+                current.copy(items = current.items + items)
+            }
         }
         _transferError.value = null
         _batchMessage.value = null
+        maybeStartOutgoingQueue()
+    }
+
+    /** Files delivered by Android Share, already spooled by
+     * [spoolSharedFiles]: each entry carries its spool path, name
+     * and exact size, so the runner sends from the spool directly
+     * and never depends on the sending app's read permission. The
+     * files append at the bottom of the queue and send at once when
+     * connected, or stage on Home when not. */
+    fun receiveSharedFiles(shared: List<SharedFile>) {
+        if (shared.isEmpty()) return
+        val items = shared.map { f ->
+            BatchItem(
+                id = UUID.randomUUID().toString(),
+                uri = f.uri.toString(),
+                name = f.name,
+                providerSize = f.size,
+                spooledSize = f.size,
+                spoolPath = f.spool.absolutePath
+            )
+        }
+        // Atomic append, as in enqueueOutgoing: a file shared while
+        // a run is finishing must not be lost with it.
+        _batch.update { current ->
+            if (current == null) {
+                BatchState(items = items)
+            } else {
+                current.copy(items = current.items + items)
+            }
+        }
+        _transferError.value = null
+        _batchMessage.value = null
+        DiagLog.log("session", "shared files staged: ${items.size}")
+        maybeStartOutgoingQueue()
+    }
+
+    /** Spool shared files to cacheDir at share time, then hand them
+     * to the queue. Runs on the session scope: the copy can take a
+     * moment for a large file, and the UI must not block. A file
+     * that cannot be opened is skipped and reported in
+     * [_transferError]; the rest still queue. */
+    fun spoolSharedFiles(uris: List<Uri>) {
         scope.launch {
-            sendSingleFile(uri, isBatch = false, preflight = true)
+            val shared = uris.mapNotNull { uri -> spoolSharedFile(uri) }
+            if (shared.isNotEmpty()) receiveSharedFiles(shared)
         }
     }
+
+    /** Copy one shared file to a cacheDir spool and measure it. The
+     * spool is the file that will be sent: its size and hash are
+     * exact, and the send no longer depends on the sending app's
+     * temporary read permission. Returns null when the file cannot
+     * be opened. */
+    private fun spoolSharedFile(uri: Uri): SharedFile? {
+        val name = resolveUriName(uri)
+        val spool = File(context.cacheDir, "send-${UUID.randomUUID()}.tmp")
+        return try {
+            val opened = context.contentResolver.openInputStream(uri)
+                ?: run { _transferError.value = "could not open $name"; return null }
+            opened.use { inp -> FileOutputStream(spool).use { out -> inp.copyTo(out) } }
+            SharedFile(uri, name, spool.length(), spool)
+        } catch (e: Exception) {
+            spool.delete()
+            _transferError.value = "could not copy $name: ${e.message}"
+            null
+        }
+    }
+
+    /** Start the outgoing runner when there is a queue to send, the
+     * session is connected, and no runner is active. Called on
+     * enqueue and on every transition to CONNECTED. A runner that
+     * finds its queue empty (everything excluded) clears the queue
+     * and stops; a queue only ever outlives a run when it was staged
+     * before a connection. The claim (running=false to true) is one
+     * atomic update: two concurrent starts cannot both launch a
+     * runner for one batch, and the all-excluded clear cannot wipe
+     * a file appended after the read. */
+    private fun maybeStartOutgoingQueue() {
+        var toLaunch: BatchState? = null
+        _batch.update { batch ->
+            if (batch == null) return@update null
+            if (batch.running || batch.outcome != null) return@update batch
+            if (_connection.value != ConnectionState.CONNECTED) return@update batch
+            if (batch.includedCount == 0) {
+                deleteUnsentSpools(batch.items)
+                return@update null
+            }
+            val started = batch.copy(running = true)
+            toLaunch = started
+            started
+        }
+        if (toLaunch == null) return
+        batchGeneration++
+        val generation = batchGeneration
+        scope.launch { runOutgoingQueue(generation) }
+    }
+
+    /** Remove a queued file in the File queue sheet: it stays in
+     * place (struck through, with Undo) and is never sent, and the
+     * Home count drops. Only reachable while the queue is staged;
+     * the sheet is not shown while a queue is running. */
+    fun setQueueItemExcluded(id: String, excluded: Boolean) {
+        _batch.update { batch ->
+            batch?.copy(items = batch.items.map { if (it.id == id) it.copy(excluded = excluded) else it })
+        }
+    }
+
+    /** Drop the whole staged queue (sheet dismissed with zero
+     * included files): delete the spools of files that never sent
+     * and clear the queue. A running queue is never dropped this way. */
+    fun purgeQueue() {
+        val batch = _batch.value ?: return
+        if (batch.running) return
+        deleteUnsentSpools(batch.items)
+        _batch.value = null
+        _batchMessage.value = null
+    }
+
+    /** Drop the files removed in the File queue sheet when it closes:
+     * their spools are deleted and they leave the queue. Undo is only
+     * available while the sheet is open. */
+    fun purgeExcludedItems() {
+        val batch = _batch.value ?: return
+        val excluded = batch.items.filter { it.excluded }
+        if (excluded.isEmpty()) return
+        deleteUnsentSpools(excluded)
+        _batch.update { it?.copy(items = it.items.filter { item -> !item.excluded }) }
+        if (_batch.value?.items?.isEmpty() == true) _batch.value = null
+    }
+
+    /** Delete the spool files of queue items that never sent (still
+     * QUEUED, or excluded in the sheet). Sent and attempted files
+     * already had their spool deleted by sendSingleFile's finally. */
+    private fun deleteUnsentSpools(items: List<BatchItem>) {
+        items.filter { it.phase == BatchItemPhase.QUEUED }
+            .mapNotNull { it.spoolPath }
+            .forEach { path ->
+                try { File(path).delete() } catch (_: Exception) {}
+            }
+    }
+
+    /** Included-file count of the live queue, for the "N of M files
+     * sent" outcome messages. Falls back to [sent] when the queue is
+     * already gone. */
+    private fun queueTotal(sent: Int): Int = _batch.value?.includedCount ?: sent
 
     /** One awaitable file send: spool, hash, write, wait for the PC's
      * ack. The caller holds the transfer slot (no guard here). When
@@ -1564,7 +1768,15 @@ class SessionManager(private val context: Context) {
         preflight: Boolean,
         onPrepared: ((Long) -> Unit)? = null,
         onProgress: ((Long, Long, Double) -> Unit)? = null,
-        onWaitingAck: (() -> Unit)? = null
+        onWaitingAck: (() -> Unit)? = null,
+        /** A file already spooled on receipt (Android Share): the
+         * bytes come from it directly, so the send no longer depends
+         * on the sending app's read permission. The spool is deleted
+         * in the finally below, like a spool made here. */
+        existingSpool: File? = null,
+        /** Display name for an existing spool (its URI has no
+         * provider behind it). Null resolves the name from the URI. */
+        displayName: String? = null
     ): SendOutcome {
         val s = socket ?: run { _transferError.value = "Not connected. Join the PC and try again."; return SendOutcome.NotSent("not connected") }
         // Generation of this session: a cancel outcome is recorded
@@ -1578,7 +1790,7 @@ class SessionManager(private val context: Context) {
             // verifyAlive already fails the session when it is dead.
             if (!verifyAlive(2000)) return SendOutcome.NotSent("connection lost")
         }
-        val name = resolveUriName(uri)
+        val name = displayName ?: resolveUriName(uri)
         _busyPhase.value = BusyPhase.PREPARING
         // Spool the picked file to a local temp copy first. The size
         // reported by a content provider (OpenableColumns.SIZE) is
@@ -1589,11 +1801,18 @@ class SessionManager(private val context: Context) {
         // fail with "bad header length", close the session, and the
         // phone then fails with Broken pipe. Size, hash and bytes
         // all come from the same local spool, so they cannot disagree.
-        val spool = File(context.cacheDir, "send-${UUID.randomUUID()}.tmp")
+        // A file shared from another app arrives already spooled
+        // (see spoolSharedFile): its spool is used directly.
+        val spool = existingSpool ?: File(context.cacheDir, "send-${UUID.randomUUID()}.tmp")
         try {
-            val opened = context.contentResolver.openInputStream(uri)
-                ?: run { _transferError.value = "send failed: could not open $name"; return SendOutcome.NotSent("could not open $name") }
-            opened.use { inp -> FileOutputStream(spool).use { out -> inp.copyTo(out) } }
+            if (existingSpool == null) {
+                val opened = context.contentResolver.openInputStream(uri)
+                    ?: run { _transferError.value = "send failed: could not open $name"; return SendOutcome.NotSent("could not open $name") }
+                opened.use { inp -> FileOutputStream(spool).use { out -> inp.copyTo(out) } }
+            } else if (!spool.exists()) {
+                _transferError.value = "send failed: staged file $name is gone"
+                return SendOutcome.NotSent("staged file gone")
+            }
             val (counted, sha) = FileInputStream(spool).use { hashAndCount(it) }
             val size = counted
             onPrepared?.invoke(size)
@@ -1773,113 +1992,128 @@ class SessionManager(private val context: Context) {
         }
     }
 
-    /** Send several files as one batch, in picker result order, one at
-     * a time. A single URI is just a single send. The batch holds the
-     * transfer slot from the first preparation to the last
-     * acknowledgement, so the panel and busy controls stay in place
-     * between files. */
-    fun sendBatch(uris: List<Uri>) {
-        if (uris.isEmpty()) return
-        if (uris.size == 1) { sendFile(uris[0]); return }
-        if (_active.value != null || _busyPhase.value != null || _batch.value != null) {
-            _transferError.value = "A transfer is already in progress"
-            return
-        }
-        if (_connection.value != ConnectionState.CONNECTED || socket == null) {
-            _transferError.value = "Not connected. Join the PC and try again."
-            return
-        }
-        _transferError.value = null
-        _batchMessage.value = null
-        // Hold the slot synchronously, before the coroutine starts, so
-        // a single send cannot slip in between the tap and the first file.
-        _busyPhase.value = BusyPhase.PREPARING
-        val generation = ++batchGeneration
-        scope.launch {
-            runBatch(uris, generation)
-        }
-    }
-
-    /** Cancel the running batch. Invalidates the queue first, so a late
-     * acknowledgement cannot start the next file, then disconnects:
-     * the current build has no way to stop a send without closing the
-     * session. Completed files stay in Session history. */
+    /** Cancel the outgoing queue. Invalidates the runner first, so a
+     * late acknowledgement cannot start the next file, then cancels
+     * the transfer in flight: the engine drains to the message
+     * boundary and the session stays open (v0.9.8 cancel). Completed
+     * files stay in Session history; files that never started are
+     * dropped with their spools. A staged queue (never started) is
+     * dropped the same way, without touching the session. */
     fun cancelBatch() {
         val batch = _batch.value ?: return
-        DiagLog.log("session", "cancelBatch (user) sent=${batch.sentCount} of ${batch.items.size}")
+        DiagLog.log("session", "cancelBatch (user) sent=${batch.sentCount} of ${batch.includedCount}")
         batchGeneration++
-        _batch.value = null
-        _active.value = null
-        _busyPhase.value = null
-        _batchMessage.value = "Batch cancelled · ${batch.sentCount} of ${batch.items.size} files sent"
-        disconnect()
+        _batch.update { it?.copy(cancelling = true) }
+        if (!batch.running) {
+            // Nothing in flight: just drop the staged queue.
+            deleteUnsentSpools(batch.items)
+            _batch.value = null
+            _batchMessage.value = "Batch cancelled · 0 of ${batch.includedCount} files sent"
+            return
+        }
+        // The runner is mid-file: cancel the transfer in flight.
+        // The runner's generation check then finishes the queue.
+        // cancelTransfer returns false when the file already
+        // committed (bytes sent, waiting for the ack): the runner
+        // still ends at its generation check, after counting it.
+        cancelTransfer()
     }
 
-    /** The batch runner. Sends the snapshotted list in order, starting
-     * the next file only after the current file is confirmed. Stops on
-     * the first failure, on a disconnect, or on cancellation, and
-     * leaves the remaining items unsent for explicit reselection. */
-    private suspend fun runBatch(uris: List<Uri>, generation: Int) {
-        // Retain access to the selected URIs for the lifetime of the
-        // batch: the picker's transient permission can lapse while the
-        // batch is still sending.
-        uris.forEach { uri ->
-            try { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
-        }
-        // Snapshot the selected list at the start.
-        val items = uris.map { uri ->
-            BatchItem(id = UUID.randomUUID().toString(), uri = uri.toString(), name = resolveUriName(uri), providerSize = resolveUriSize(uri))
-        }
-        val startedAt = System.currentTimeMillis()
-        _batch.value = BatchState(items = items, activeIndex = 0, sentCount = 0, startedAtMs = startedAt)
+    /** The queue runner. Sends the live list in order, starting the
+     * next file only after the current file is confirmed. The list
+     * is re-read on every iteration: files appended while the runner
+     * is active send after the current files, and files removed in
+     * the File queue sheet are skipped. A single send is a queue of
+     * one, so this is the only send path. Stops on the first failure,
+     * on a disconnect, or on cancellation. */
+    private suspend fun runOutgoingQueue(generation: Int) {
         var sent = 0
-        for (index in items.indices) {
-            if (generation != batchGeneration) return finishBatchCancelled(sent, items.size)
-            if (_connection.value != ConnectionState.CONNECTED) return finishBatchFailed(sent, items.size)
-            val item = items[index]
-            updateBatchItem(index) { it.copy(phase = BatchItemPhase.PREPARING) }
-            _batch.update { it?.copy(activeIndex = index) }
+        var firstFile = true
+        while (true) {
+            if (generation != batchGeneration) {
+                // Cancelled (or the session ended): the queue is
+                // already cleared by whoever cancelled it, or the
+                // canceller finished it. Clear the slot and stop;
+                // no outcome message, the canceller already said
+                // what happened.
+                val current = _batch.value
+                if (current == null) {
+                    _active.value = null
+                    _busyPhase.value = null
+                    return
+                }
+                return finishBatchCancelled(sent, current.includedCount)
+            }
+            if (_connection.value != ConnectionState.CONNECTED) {
+                // Connection lost mid-queue: the remaining files are
+                // dropped with the run, like a failed batch.
+                val current = _batch.value ?: return
+                return finishBatchFailed(sent, current.includedCount)
+            }
+            val batch = _batch.value ?: return
+            val nextIndex = batch.items.indexOfFirst { !it.excluded && it.phase == BatchItemPhase.QUEUED }
+            if (nextIndex < 0) {
+                // Nothing left to send. A run that sent at least one
+                // file ends as sent; a queue of only-excluded files
+                // clears silently. Either way a file appended after
+                // this check still survives (see
+                // finishBatchKeepingQueued).
+                if (sent > 0) {
+                    finishBatchSent(sent)
+                } else {
+                    finishBatchKeepingQueued(null)
+                }
+                return
+            }
+            val item = batch.items[nextIndex]
+            updateBatchItem(nextIndex) { it.copy(phase = BatchItemPhase.PREPARING) }
+            _batch.update { it?.copy(activeIndex = nextIndex) }
             val outcome = sendSingleFile(
                 Uri.parse(item.uri),
                 isBatch = true,
-                // One pre-flight ping for the batch, before the first
+                // One pre-flight ping for the queue, before the first
                 // file. Later files rely on the heartbeat and on the
                 // write itself failing when the socket is dead.
-                preflight = index == 0,
+                preflight = firstFile,
                 onPrepared = { size ->
-                    updateBatchItem(index) { it.copy(spooledSize = size, phase = BatchItemPhase.SENDING) }
+                    updateBatchItem(nextIndex) { it.copy(spooledSize = size, phase = BatchItemPhase.SENDING) }
                 },
                 onProgress = { transferred, _, _ ->
-                    updateBatchProgress(index, transferred, startedAt)
+                    updateBatchProgress(nextIndex, transferred, batch.startedAtMs)
                 },
                 onWaitingAck = {
-                    updateBatchItem(index) { it.copy(phase = BatchItemPhase.VERIFYING) }
+                    updateBatchItem(nextIndex) { it.copy(phase = BatchItemPhase.VERIFYING) }
                     _batch.update { it?.copy(batchEtaText = "Verifying on PC") }
-                }
+                },
+                // A file shared from another app arrives already
+                // spooled: send from the spool, under its real name.
+                existingSpool = item.spoolPath?.let { File(it) },
+                displayName = item.spoolPath?.let { item.name }
             )
-            // A cancel (or disconnect) during this file ends the batch
-            // here, before the outcome is acted on.
-            if (generation != batchGeneration) return finishBatchCancelled(sent, items.size)
+            firstFile = false
             when (outcome) {
                 is SendOutcome.Sent -> {
                     sent++
-                    updateBatchItem(index) { it.copy(phase = BatchItemPhase.SENT, savedName = outcome.savedName, transferredBytes = outcome.size) }
+                    updateBatchItem(nextIndex) { it.copy(phase = BatchItemPhase.SENT, savedName = outcome.savedName, transferredBytes = outcome.size) }
                     _batch.update { it?.copy(sentCount = sent) }
+                    // A cancel tapped while this file was verifying
+                    // ends the queue here, after counting the file:
+                    // it was fully sent and confirmed.
+                    if (generation != batchGeneration) return finishBatchCancelled(sent, queueTotal(sent))
                 }
                 is SendOutcome.Cancelled -> {
                     // The file was cancelled (locally or by the peer).
-                    // The batch stops here, as if the user cancelled
+                    // The queue stops here, as if the user cancelled
                     // it; the session stays open.
-                    updateBatchItem(index) { it.copy(phase = BatchItemPhase.FAILED) }
-                    return finishBatchCancelled(sent, items.size)
+                    updateBatchItem(nextIndex) { it.copy(phase = BatchItemPhase.FAILED) }
+                    return finishBatchCancelled(sent, queueTotal(sent))
                 }
                 is SendOutcome.NotSent -> {
-                    updateBatchItem(index) { it.copy(phase = BatchItemPhase.FAILED) }
-                    return finishBatchFailed(sent, items.size)
+                    updateBatchItem(nextIndex) { it.copy(phase = BatchItemPhase.FAILED) }
+                    return finishBatchFailed(sent, queueTotal(sent))
                 }
             }
         }
-        finishBatchSent(items.size)
     }
 
     /** Update one item in the live batch state. */
@@ -1909,32 +2143,50 @@ class SessionManager(private val context: Context) {
         }
     }
 
+    /** End a run, keeping any file that was appended to the queue while
+     * the run was finishing. A file appended after the runner's last
+     * pick (or while it settles a cancel or a failure) is still
+     * QUEUED: it must survive as a staged queue and send next, not
+     * vanish with the finished run. Its spool is kept; spools of
+     * dropped files are deleted. The survivor check runs inside an
+     * atomic update, so an append racing this finish cannot be lost
+     * either way: if the append lands first the survivor is kept, if
+     * the finish lands first the append creates a fresh batch.
+     * Returns the number of surviving files. */
+    private fun finishBatchKeepingQueued(message: String?): Int {
+        var survivors: List<BatchItem> = emptyList()
+        _batch.update { batch ->
+            if (batch == null) return@update null
+            val kept = batch.items.filter { !it.excluded && it.phase == BatchItemPhase.QUEUED }
+            survivors = kept
+            val keptIds = kept.map { it.id }.toSet()
+            deleteUnsentSpools(batch.items.filter { it.id !in keptIds })
+            if (kept.isEmpty()) null else BatchState(items = kept)
+        }
+        _active.value = null
+        _busyPhase.value = null
+        if (message != null) _batchMessage.value = message
+        if (survivors.isNotEmpty()) maybeStartOutgoingQueue()
+        return survivors.size
+    }
+
     /** All files confirmed. The panel goes away; the outcome stays as
      * a message under it, and the confirmed transfers stay in history. */
     private fun finishBatchSent(count: Int) {
-        _active.value = null
-        _busyPhase.value = null
-        _batch.value = null
-        _batchMessage.value = "Batch sent · $count ${if (count == 1) "file" else "files"}"
+        finishBatchKeepingQueued("Batch sent · $count ${if (count == 1) "file" else "files"}")
     }
 
     /** Stopped by a file failure or a disconnect. The per-file error is
      * already in [_transferError]; keep the confirmed count visible
      * alongside it. Remaining items are unsent. */
     private fun finishBatchFailed(sent: Int, total: Int) {
-        _active.value = null
-        _busyPhase.value = null
-        _batch.value = null
-        _batchMessage.value = "$sent of $total files sent"
+        finishBatchKeepingQueued("$sent of $total files sent")
     }
 
     /** Stopped by the user cancelling. Same shape as a failure, with
      * the cancelled wording. */
     private fun finishBatchCancelled(sent: Int, total: Int) {
-        _active.value = null
-        _busyPhase.value = null
-        _batch.value = null
-        _batchMessage.value = "Batch cancelled · $sent of $total files sent"
+        finishBatchKeepingQueued("Batch cancelled · $sent of $total files sent")
     }
 
     fun requestDownload(name: String) {

@@ -402,13 +402,13 @@ fun SessionScreen(
         }
         if (showCancelBatchConfirm) {
             val batch = uiState.batchState
-            val remaining = batch?.let { it.items.size - it.sentCount } ?: 0
+            val remaining = batch?.let { it.includedCount - it.sentCount } ?: 0
             AlertDialog(
                 onDismissRequest = { showCancelBatchConfirm = false },
                 title = { Text("Cancel this batch?", color = RiptideColors.OnSurface) },
                 text = {
                     Text(
-                        "This stops the current file and the remaining $remaining file${if (remaining == 1) "" else "s"} in the queue, and disconnects from the PC. Files already sent stay in Session history.",
+                        "This stops the current file and the remaining $remaining file${if (remaining == 1) "" else "s"} in the queue. The session stays connected. Files already sent stay in Session history.",
                         color = RiptideColors.OnSurfaceVariant
                     )
                 },
@@ -417,7 +417,7 @@ fun SessionScreen(
                         onClick = { showCancelBatchConfirm = false; viewModel.onCancelBatch() },
                         shape = RoundedCornerShape(28.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
-                    ) { Text("Cancel batch and disconnect") }
+                    ) { Text("Cancel batch") }
                 },
                 dismissButton = {
                     Button(

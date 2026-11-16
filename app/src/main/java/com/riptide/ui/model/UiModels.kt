@@ -56,7 +56,13 @@ data class HomeUiState(
     val joinEnabled: Boolean = true,
     /** Current dial attempt (J7): "Trying IPv6…" and friends, or null
      * when not dialling. */
-    val attemptLabel: String? = null
+    val attemptLabel: String? = null,
+    /** The outgoing queue (staged or sending), or null when no files
+     * are queued. The Home panel shows when this has included files. */
+    val outgoingQueue: BatchState? = null,
+    /** True while the File queue sheet is open. MainActivity suspends
+     * main-tab swipes while this is true. */
+    val queueSheetOpen: Boolean = false
 )
 
 /** Create Server screen state (C1-C8). The listener only runs while
@@ -79,13 +85,17 @@ data class ActiveTransfer(val filename: String, val direction: TransferDirection
 /** Phase of one file inside an outgoing batch. */
 enum class BatchItemPhase { QUEUED, PREPARING, SENDING, VERIFYING, SENT, FAILED }
 
-/** One file in an outgoing batch. The ID is a stable UUID, so two
+/** One file in the outgoing queue. The ID is a stable UUID, so two
  * files with the same name remain distinct. The URI is stored as a
  * string (the model must stay unit-testable without Android); the
  * manager parses it back when it opens the file. The provider size
  * is what the content provider reported (null when it reported
  * nothing usable); the spooled size is the exact size of the bytes
- * that will be sent, known once the file has been prepared. */
+ * that will be sent, known once the file has been prepared.
+ * [excluded] is the File queue sheet's removal: excluded files stay
+ * in place for Undo and are never sent, and are not counted. [spoolPath]
+ * is the absolute path of a file already spooled on receipt (Android
+ * Share); the runner sends from it directly instead of copying again. */
 data class BatchItem(
     val id: String,
     val uri: String,
@@ -94,7 +104,9 @@ data class BatchItem(
     val spooledSize: Long? = null,
     val transferredBytes: Long = 0,
     val phase: BatchItemPhase = BatchItemPhase.QUEUED,
-    val savedName: String? = null
+    val savedName: String? = null,
+    val excluded: Boolean = false,
+    val spoolPath: String? = null
 ) {
     /** Best-known size for this file: the spooled size when available,
      * else the provider size. Null when neither is known. */
@@ -106,27 +118,38 @@ data class BatchItem(
 /** Outcome of a finished batch. */
 enum class BatchOutcome { SENT, FAILED, CANCELLED }
 
-/** One session-scoped outgoing batch: the ordered list, the current
- * position, and per-file phase and progress. The list is snapshotted
- * at the start; files are sent in picker result order, one at a time,
- * and the next starts only after the current file is confirmed. */
+/** One session-scoped outgoing queue: the ordered list, the current
+ * position, and per-file phase and progress. This is the single
+ * outgoing model for the Home OUTGOING QUEUE panel and the Session
+ * screen: a single send is a queue of one, picker batches and shared
+ * files append at the bottom, and the runner sends in order, one file
+ * at a time, starting the next only after the current file is
+ * confirmed. [running] is true while the runner is active; a queue
+ * can exist with running false (files staged before a connection).
+ * [cancelling] is true while a queue cancel is settling. */
 data class BatchState(
     val items: List<BatchItem>,
     val activeIndex: Int = 0,
     val sentCount: Int = 0,
     val startedAtMs: Long = System.currentTimeMillis(),
-    /** Non-null once the batch has finished (success, failure, or cancel). */
+    /** Non-null once the queue has finished (success, failure, or cancel). */
     val outcome: BatchOutcome? = null,
     /** Overall speed, formatted, for the expanded details. Blank while unknown. */
     val overallSpeedFormatted: String = "",
     /** Batch ETA text for the subtitle: "2m 13s remaining",
      * "Estimating time…", or "Verifying on PC". */
-    val batchEtaText: String = "Estimating time…"
+    val batchEtaText: String = "Estimating time…",
+    val running: Boolean = false,
+    val cancelling: Boolean = false
 ) {
     val activeItem: BatchItem? get() = items.getOrNull(activeIndex)
-    /** Total selected bytes, when every file's size is known; null
-     * otherwise, in which case the overall bar is indeterminate. */
-    val totalBytes: Long? get() = if (items.all { it.knownSize != null }) items.sumOf { it.knownSize!! } else null
+    /** Files that will still send: everything not removed in the
+     * File queue sheet. The Home count and the runner both use this. */
+    val includedItems: List<BatchItem> get() = items.filter { !it.excluded }
+    val includedCount: Int get() = includedItems.size
+    /** Total selected bytes, when every included file's size is known;
+     * null otherwise, in which case the overall bar is indeterminate. */
+    val totalBytes: Long? get() = if (includedItems.all { it.knownSize != null }) includedItems.sumOf { it.knownSize!! } else null
     /** Bytes of confirmed files (exact, from their spools). */
     val confirmedBytes: Long get() = items.filter { it.phase == BatchItemPhase.SENT }.sumOf { it.spooledSize ?: 0L }
     /** Confirmed bytes plus bytes written for the active file. */

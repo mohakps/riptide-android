@@ -75,6 +75,39 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun testRunningQueueAllowsAppending() {
+        val vm = SessionViewModel()
+        vm.setConnected(true)
+        assertTrue(vm.uiState.value.canStartTransfer)
+        // A running queue owns the busy phase and the active transfer:
+        // appending a file to the bottom of the queue is allowed, the
+        // runner serializes it behind the current file.
+        vm.setBatchState(
+            com.riptide.ui.model.BatchState(
+                items = listOf(
+                    com.riptide.ui.model.BatchItem(id = "1", uri = "content://com.example/1", name = "a.pdf", providerSize = 100L)
+                ),
+                activeIndex = 0,
+                running = true
+            )
+        )
+        vm.setActiveTransfer(ActiveTransfer(filename = "a.pdf", direction = TransferDirection.SEND, totalBytes = 100L, transferredBytes = 50L, speedFormatted = "1 MB/s", progress = 0.5f, etaFormatted = "~1s"))
+        vm.setBusyPhase(BusyPhase.TRANSFERRING)
+        assertTrue(vm.uiState.value.canStartTransfer)
+    }
+
+    @Test
+    fun testReceiveBlocksAppending() {
+        val vm = SessionViewModel()
+        vm.setConnected(true)
+        assertTrue(vm.uiState.value.canStartTransfer)
+        // A receive in flight blocks a send: the engine cannot send
+        // while the reader is mid-payload.
+        vm.setActiveTransfer(ActiveTransfer(filename = "in.mp4", direction = TransferDirection.RECEIVE, totalBytes = 2000L, transferredBytes = 500L, speedFormatted = "12.5 MB/s", progress = 0.25f, etaFormatted = "~3s"))
+        assertFalse(vm.uiState.value.canStartTransfer)
+    }
+
+    @Test
     fun testCancellingTransferDefaultsToFalse() {
         val vm = SessionViewModel()
         assertFalse(vm.uiState.value.isCancellingTransfer)
