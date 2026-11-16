@@ -73,4 +73,43 @@ class SessionViewModelTest {
         vm.setBatchState(null)
         assertTrue(vm.uiState.value.canStartTransfer)
     }
+
+    @Test
+    fun testCancellingTransferDefaultsToFalse() {
+        val vm = SessionViewModel()
+        assertFalse(vm.uiState.value.isCancellingTransfer)
+    }
+
+    @Test
+    fun testCancellingTransferBlocksNewTransfers() {
+        val vm = SessionViewModel()
+        vm.setConnected(true)
+        assertTrue(vm.uiState.value.canStartTransfer)
+        vm.setCancellingTransfer(true)
+        assertFalse(vm.uiState.value.canStartTransfer)
+        vm.setCancellingTransfer(false)
+        assertTrue(vm.uiState.value.canStartTransfer)
+    }
+
+    @Test
+    fun testCancelledRecordKeepsStatusAndSizeInHistory() {
+        val vm = SessionViewModel()
+        vm.addTransferRecord(
+            com.riptide.ui.model.TransferRecord(
+                id = "1",
+                filename = "report.pdf",
+                savedFilename = "report.pdf",
+                wasRenamed = false,
+                sizeBytes = 42L * 1024 * 1024,
+                direction = com.riptide.ui.model.TransferDirection.RECEIVE,
+                status = com.riptide.ui.model.TransferStatus.CANCELLED,
+                sha256Verified = false
+            )
+        )
+        val records = vm.uiState.value.transferHistory
+        assertEquals(1, records.size)
+        assertEquals(com.riptide.ui.model.TransferStatus.CANCELLED, records[0].status)
+        assertEquals(42L * 1024 * 1024, records[0].sizeBytes)
+        assertEquals("report.pdf", records[0].filename)
+    }
 }

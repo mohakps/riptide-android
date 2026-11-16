@@ -56,7 +56,10 @@ fun ActiveTransferHero(
     busyPhase: BusyPhase?,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
-    receiveFolderName: String = "Downloads/Riptide"
+    receiveFolderName: String = "Downloads/Riptide",
+    /** True while a transfer-level cancel is settling: the button
+     * reads "Cancelling…" and ignores repeat taps. */
+    isCancelling: Boolean = false
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -312,11 +315,12 @@ fun ActiveTransferHero(
                         }
                         Button(
                             onClick = onCancel,
+                            enabled = !isCancelling,
                             shape = RoundedCornerShape(28.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.Error),
                             modifier = Modifier.heightIn(min = 48.dp)
                         ) {
-                            Text("Cancel", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text(if (isCancelling) "Cancelling…" else "Cancel", fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
                     }
                 }

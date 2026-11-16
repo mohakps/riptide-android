@@ -72,7 +72,6 @@ fun SessionScreen(
     val uiState by viewModel.uiState.collectAsState()
     var showDownloadDialog by remember { mutableStateOf(false) }
     var downloadPrefill by remember { mutableStateOf("") }
-    var showCancelConfirm by remember { mutableStateOf(false) }
     var showCancelBatchConfirm by remember { mutableStateOf(false) }
     var showDisconnectSheet by remember { mutableStateOf(false) }
     // Focus returns to the Disconnect trigger when the sheet is
@@ -373,7 +372,8 @@ fun SessionScreen(
                             activeTransfer = uiState.activeTransfer,
                             busyPhase = uiState.busyPhase,
                             receiveFolderName = uiState.receiveFolderName,
-                            onCancel = { showCancelConfirm = true }
+                            isCancelling = uiState.isCancellingTransfer,
+                            onCancel = { viewModel.onCancelTransfer() }
                         )
                     }
                     uiState.sessionError?.let { err ->
@@ -398,34 +398,6 @@ fun SessionScreen(
                 initialFilename = downloadPrefill,
                 onDismiss = { showDownloadDialog = false },
                 onRequestDownload = { filename -> viewModel.requestDownload(filename) }
-            )
-        }
-        if (showCancelConfirm) {
-            AlertDialog(
-                onDismissRequest = { showCancelConfirm = false },
-                title = { Text("Cancel this transfer?", color = RiptideColors.OnSurface) },
-                text = {
-                    Text(
-                        "This will disconnect from the PC. The file must restart.",
-                        color = RiptideColors.OnSurfaceVariant
-                    )
-                },
-                confirmButton = {
-                    Button(
-                        onClick = { showCancelConfirm = false; viewModel.onCancelTransfer() },
-                        shape = RoundedCornerShape(28.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.Primary, contentColor = RiptideColors.OnPrimary)
-                    ) { Text("Cancel and disconnect") }
-                },
-                dismissButton = {
-                    Button(
-                        onClick = { showCancelConfirm = false },
-                        shape = RoundedCornerShape(28.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.OnSurface)
-                    ) { Text("Keep transferring") }
-                },
-                containerColor = RiptideColors.Surface,
-                shape = RoundedCornerShape(28.dp)
             )
         }
         if (showCancelBatchConfirm) {

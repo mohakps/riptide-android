@@ -187,5 +187,8 @@ data class SessionUiState(
     val batchState: BatchState? = null,
     /** Outcome of the last finished batch ("Batch sent · 5 files",
      * "2 of 5 files sent"), cleared when a new transfer starts. */
-    val batchMessage: String? = null
+    val batchMessage: String? = null,
+    /** True while a transfer-level cancel is settling. The active
+     * card's Cancel button reads "Cancelling…" and ignores taps. */
+    val isCancellingTransfer: Boolean = false
 )

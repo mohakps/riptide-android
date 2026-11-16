@@ -41,6 +41,10 @@ object DiagLog {
         }
     }
 
+    /** A copy of the buffered lines, newest last. Used by tests to
+     * diagnose a failure without writing a log file. */
+    fun snapshot(): List<String> = synchronized(lock) { lines.toList() }
+
     /** Save the buffered lines to Downloads/Riptide and return the
      * content URI of the saved file, or null when there is nothing to
      * share. This is the only place a log file is written. */

@@ -35,9 +35,11 @@ import com.riptide.util.formatBytes
  * soft blue (#8AB4F8 arrow and status), filenames are a softer
  * off-white (#D5D2CC) at 16/22 sp medium. The subtitle shows only the
  * status and the file size ("Sent · 130.2 KB"); the separator and the
- * size are muted (#A8A6A1). A failed or cancelled row keeps its
- * existing muted styling and names the outcome ("Failed · 130.2 KB")
- * instead of the direction, so it never reads as a success. The arrow
+ * size are muted (#A8A6A1). A failed row keeps its existing muted
+ * styling and names the outcome ("Failed · 130.2 KB") instead of the
+ * direction, so it never reads as a success. A cancelled row names
+ * the outcome in signature coral (#FF6B6B), with the size when known
+ * ("Cancelled · 42 MB") and "Cancelled" alone when it is not. The arrow
  * is centered against the combined filename and metadata block, and
  * the block grows when either line wraps.
  */
@@ -69,8 +71,11 @@ fun SessionHistoryFeed(records: List<TransferRecord>, modifier: Modifier = Modif
                 val isSuccess = record.status == TransferStatus.SUCCESS
                 // The subtitle names the outcome. A success names the
                 // direction (Sent / Received), coloured by direction; a
-                // failure names the outcome (Failed / Cancelled) in the
-                // existing muted styling.
+                // failure names the outcome (Failed) in the existing
+                // muted styling; a cancellation names the outcome
+                // (Cancelled) in signature coral (#FF6B6B). The size is
+                // shown when known ("Cancelled · 42 MB"); a cancelled
+                // row with an unknown size shows "Cancelled" alone.
                 val statusText = when {
                     isSuccess && isSend -> "Sent"
                     isSuccess -> "Received"
@@ -78,6 +83,7 @@ fun SessionHistoryFeed(records: List<TransferRecord>, modifier: Modifier = Modif
                     else -> "Failed"
                 }
                 val statusColor = when {
+                    record.status == TransferStatus.CANCELLED -> RiptideColors.Primary
                     !isSuccess -> RiptideColors.OnSurfaceVariant
                     isSend -> RiptideColors.Success
                     else -> RiptideColors.ReceivedBlue
@@ -107,8 +113,10 @@ fun SessionHistoryFeed(records: List<TransferRecord>, modifier: Modifier = Modif
                         Text(
                             text = buildAnnotatedString {
                                 withStyle(SpanStyle(color = statusColor)) { append(statusText) }
-                                withStyle(SpanStyle(color = RiptideColors.HistoryMuted)) {
-                                    append(" · ${formatBytes(record.sizeBytes)}")
+                                if (record.status != TransferStatus.CANCELLED || record.sizeBytes > 0) {
+                                    withStyle(SpanStyle(color = RiptideColors.HistoryMuted)) {
+                                        append(" · ${formatBytes(record.sizeBytes)}")
+                                    }
                                 }
                             },
                             fontSize = 13.sp,

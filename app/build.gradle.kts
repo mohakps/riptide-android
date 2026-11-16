@@ -20,8 +20,8 @@ android {
         applicationId = "com.riptide"
         minSdk = 29
         targetSdk = 34
-        versionCode = 25
-        versionName = "0.9.7"
+        versionCode = 26
+        versionName = "0.9.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -72,6 +72,21 @@ tasks.withType<org.gradle.api.tasks.testing.Test> {
     // This VM intercepts Java loopback TCP unless IPv4 is forced; without
     // this the test worker cannot talk back to the Gradle daemon.
     systemProperty("java.net.preferIPv4Stack", "true")
+    // JDK 17 strong encapsulation: Robolectric's shadows reflect into
+    // JDK internals (notably java.net.InetAddress, used by the TLS
+    // handshake in the loopback tests). Without these opens the peer's
+    // startHandshake fails with SSLHandshakeException ("module
+    // java.base does not opens java.net to unnamed module") and the
+    // phone's dial then fails with Broken pipe. Test-only: the app
+    // itself runs on Android's runtime, not the JDK module system.
+    jvmArgs(
+        "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+        "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens", "java.base/java.io=ALL-UNNAMED",
+        "--add-opens", "java.base/java.net=ALL-UNNAMED",
+        "--add-opens", "java.base/java.util=ALL-UNNAMED",
+        "--add-opens", "java.base/java.util.concurrent=ALL-UNNAMED"
+    )
 }
 
 dependencies {
@@ -97,6 +112,11 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("androidx.test:core:1.6.1")
+    // Robolectric: the loopback session tests (cancel engine, disconnect
+    // regression) drive a real SessionManager, which needs a real
+    // Context; plain unit tests only have the android stub jar.
+    testImplementation("org.robolectric:robolectric:4.13")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

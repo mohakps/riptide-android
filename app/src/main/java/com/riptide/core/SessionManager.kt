@@ -74,6 +74,15 @@ enum class ConnectionState { IDLE, CONNECTING, CONNECTED, FAILED }
 /** Total window for one Join attempt across all candidates (J7/J8). */
 private const val JOIN_TOTAL_WINDOW_MS = 30_000L
 
+/** How long a sender that cancelled its own send waits for the receiver's answer (cancel_ack, or ack when completion won the race) before giving up and treating the transfer as cancelled. Mirrors the PC's CANCEL_OUTCOME_TIMEOUT. */
+private const val CANCEL_OUTCOME_TIMEOUT_MS = 30_000L
+
+/** Window the receiver peeks for a sender-initiated cancel after the payload, before the SHA-256 check. The sender sends "cancel" immediately after the last payload byte, so a short window is enough; every receive pays at most this much before acking. */
+private const val CANCEL_PEEK_TIMEOUT_MS = 100
+
+/** Zero padding sent at a time when a cancelled send is drained to the declared size. Mirrors the PC's _CANCEL_PAD_CHUNK. */
+private const val CANCEL_PAD_CHUNK = 1024 * 1024
+
 /** Timeout failure shown on Home (J8): title line first, then the
  * host disclaimer and the role swap. Home splits on the newlines. */
 const val JOIN_TIMEOUT_MESSAGE =
@@ -209,6 +218,63 @@ class SessionManager(private val context: Context) {
      * transfer runs at a time, so the next ack is always for this send. */
     private data class AckResult(val name: String, val ok: Boolean, val reason: String)
     @Volatile private var pendingAck: CompletableDeferred<AckResult?>? = null
+
+    /** Outcome of a sender-initiated cancel, completed by the reader:
+     * Cancelled when the receiver confirmed, AckWon when the
+     * receiver's ack arrived first and completion stands. */
+    private sealed interface CancelOutcome {
+        data class AckWon(val ack: AckResult) : CancelOutcome
+        object Cancelled : CancelOutcome
+    }
+
+    // Cancel state. Mirrors PC v1.6.0 session.py. A transfer is
+    // cancelled by draining to the next message boundary, never by
+    // closing the socket, so the session stays open for the next
+    // transfer. There is no capability negotiation and no old-peer
+    // fallback: both peers are expected to be new.
+    //
+    // The file currently being sent, or null. The reader only records
+    // a cancel outcome for this name, so a late ack for an earlier
+    // file cannot settle a later transfer.
+    @Volatile private var sendingName: String? = null
+    // The file currently being received, or null.
+    @Volatile private var receivingName: String? = null
+    // True while the byte loop of a send is running (not while waiting
+    // for the ack): only then can a cancel still take effect.
+    @Volatile private var sendLoopActive = false
+    // True while the payload loop of a receive is running: only then
+    // can a local cancel still discard bytes.
+    @Volatile private var receiveLoopActive = false
+    // Local user cancelled the outgoing transfer: set by
+    // cancelTransfer(). The send loop polls it between chunks.
+    @Volatile private var cancelSendRequestedName: String? = null
+    // The peer cancelled our send: set by the reader when a "cancel"
+    // arrives for the file being sent. The send loop polls it between
+    // chunks.
+    @Volatile private var peerCancelName: String? = null
+    // Local user cancelled the incoming transfer: set by
+    // cancelTransfer(), which also sends "cancel". The receive loop
+    // polls it between chunks and discards the rest.
+    @Volatile private var cancelReceiveRequestedName: String? = null
+    // Receives cancelled locally, name -> (.part file, declared size),
+    // waiting for the sender's "cancel_ack". The reader settles them:
+    // it deletes the .part and reports the transfer as Cancelled. A
+    // cancelled receive is never resumable. Only touched on the reader
+    // coroutine.
+    private val cancelledReceives = mutableMapOf<String, Pair<File, Long>>()
+    // Outcome of a sender-initiated cancel, completed by the reader.
+    // The send coroutine waits on it after sending "cancel".
+    @Volatile private var pendingCancelOutcome: CompletableDeferred<CancelOutcome?>? = null
+    // Framed messages the receive path read ahead (its peek for a
+    // pending "cancel" after the payload) that are not a cancel for
+    // this file. The reader dispatches them before reading from the
+    // socket, so none is lost. This is how a batch's next file header
+    // survives the peek. Only touched on the reader coroutine.
+    private val pendingHeaders = ArrayDeque<JSONObject>()
+    // True while a transfer-level cancel is settling. Drives the
+    // "Cancelling…" label; cleared when the cancel settles.
+    private val _cancellingTransfer = MutableStateFlow(false)
+    val cancellingTransfer: StateFlow<Boolean> = _cancellingTransfer.asStateFlow()
 
     init {
         DiagLog.log("session", "SessionManager created")
@@ -370,6 +436,73 @@ class SessionManager(private val context: Context) {
         _connection.value = ConnectionState.IDLE
     }
 
+    /** Cancel the active transfer and keep the session connected.
+     * Returns true when a send or receive was actually in progress
+     * and the cancel started, false when there is nothing to cancel:
+     * no transfer, or the transfer already committed (all bytes sent
+     * and waiting for the ack, or the payload fully read and
+     * verifying). A false return means the transfer completes
+     * normally a moment later; the caller must not show a Cancelling
+     * state for it. */
+    fun cancelTransfer(): Boolean {
+        val sendName = sendingName
+        if (sendName != null && sendLoopActive) {
+            cancelSendRequestedName = sendName
+            _cancellingTransfer.value = true
+            DiagLog.log("session", "cancelTransfer send $sendName")
+            return true
+        }
+        val recvName = receivingName
+        if (recvName != null && receiveLoopActive) {
+            cancelReceiveRequestedName = recvName
+            _cancellingTransfer.value = true
+            DiagLog.log("session", "cancelTransfer receive $recvName")
+            // Send "cancel" now, under the send lock. The flag is set
+            // first, so the receive loop sees it even if the mutex is
+            // briefly held by the heartbeat.
+            val sock = socket ?: return true
+            scope.launch { sendCancel(sock, recvName) }
+            return true
+        }
+        return false
+    }
+
+    /** Send a "cancel" message. Acquires the send lock. */
+    private suspend fun sendCancel(sock: SSLSocket, name: String) {
+        sendMutex.withLock {
+            try {
+                writeHeader(sock.outputStream, JSONObject().apply { put("type", "cancel"); put("name", name) }.toString().toByteArray())
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** Send a "cancel_ack" message. Acquires the send lock. Callers
+     * already holding the lock must write the header directly instead
+     * of calling this (the mutex is not reentrant). */
+    private suspend fun sendCancelAck(sock: SSLSocket, name: String) {
+        sendMutex.withLock {
+            try {
+                writeHeader(sock.outputStream, JSONObject().apply { put("type", "cancel_ack"); put("name", name) }.toString().toByteArray())
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** Send zero bytes for the remainder of a declared size. A
+     * cancelled send must still deliver exactly the declared number
+     * of payload bytes, or the receiver would read the next framed
+     * message as file bytes and lose the boundary. Zeros are fast
+     * (no disk read) and the receiver discards them. The caller holds
+     * the send lock, so this writes directly without re-acquiring it. */
+    private fun padZeros(out: java.io.OutputStream, remaining: Long) {
+        val zeros = ByteArray(CANCEL_PAD_CHUNK)
+        var left = remaining
+        while (left > 0) {
+            val n = minOf(zeros.size.toLong(), left).toInt()
+            out.write(zeros, 0, n)
+            left -= n
+        }
+    }
+
     fun connect(hostInput: String) {
         if (_connection.value == ConnectionState.CONNECTING) return
         // Validate against live capability first: an unsupported or
@@ -524,10 +657,25 @@ class SessionManager(private val context: Context) {
      * and closes the captured socket without touching the field when a
      * rejoin has already replaced it. It resets the state to IDLE only
      * when no new connect started since the tap, so a fresh session is
-     * never clobbered by the old one's cleanup. */
+     * never clobbered by the old one's cleanup. The generation is
+     * bumped first, so the old session's reader, heartbeat and
+     * verifyAlive can no longer report an error after this point:
+     * their failSession calls are ignored as stale. */
     fun disconnect() {
         DiagLog.log("session", "disconnect (user)")
         attemptGeneration++
+        // Invalidate this session's generation FIRST, before the
+        // cleanup coroutine runs: from this point on, any failure
+        // the old reader, heartbeat or verifyAlive reports belongs
+        // to a disconnected generation and failSession ignores it.
+        // That is what makes a deliberate disconnect authoritative:
+        // the reader blocked in a socket read wakes with "Socket
+        // closed" when the cleanup closes the socket, and its
+        // failSession now lands after the generation moved, instead
+        // of racing the cleanup's error-clear and IDLE set. A new
+        // connect after this bumps the generation again, so the
+        // cleanup below still knows a fresh session started.
+        connectGeneration++
         // A disconnect ends any running batch too: a late
         // acknowledgement must never start the next queued file.
         batchGeneration++
@@ -614,7 +762,28 @@ class SessionManager(private val context: Context) {
      * to FAILED, close the dead socket, and stop the service. Every
      * failure path goes through here so none of the four can be
      * forgotten again. */
-    private fun failSession(error: String) {
+    /** Fail the current session. [generation] is the generation of
+     * the session the caller belongs to: a failure from an older
+     * generation is ignored, so a reader or heartbeat from a session
+     * that has already been deliberately disconnected can never set
+     * an error on the Home screen of the next session, or on an IDLE
+     * screen after a clean disconnect. This is the fix for the
+     * "Couldn't reach this PC / Socket closed" error that used to
+     * appear after every deliberate disconnect: the reader is blocked
+     * in a socket read that disconnect() cannot interrupt, so the
+     * read throws SocketException("Socket closed") at exactly the
+     * moment the disconnect cleanup runs, and the reader's failSession
+     * used to land after the cleanup had already cleared the error.
+     * The guard is generation-based, not a wider
+     * CancellationException check: the race is the thing to kill, and
+     * it must hold when the reader thread and the cleanup coroutine
+     * run concurrently on different threads. A genuine connection
+     * loss still fails the session: its generation is current. */
+    private fun failSession(error: String, generation: Int = connectGeneration) {
+        if (generation != connectGeneration) {
+            DiagLog.log("fail", "ignored stale failSession (gen $generation != $connectGeneration): $error")
+            return
+        }
         if (_connection.value != ConnectionState.CONNECTED) return
         DiagLog.log("fail", "failSession: $error | caller: ${callerTrace()}")
         _error.value = error
@@ -634,6 +803,10 @@ class SessionManager(private val context: Context) {
      * on either attempt. */
     private suspend fun verifyAlive(timeoutMs: Long = 3000, attempts: Int = 2): Boolean {
         if (_connection.value != ConnectionState.CONNECTED) return false
+        // Generation of the session being checked: a deliberate
+        // disconnect during the check must not let this fail the
+        // session (or a new one) afterwards.
+        val generation = connectGeneration
         repeat(attempts) { attempt ->
             val before = _lastPongAt.value
             DiagLog.log("verify", "attempt ${attempt + 1}/$attempts before=$before lastPongAt=${_lastPongAt.value}")
@@ -654,7 +827,7 @@ class SessionManager(private val context: Context) {
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 DiagLog.log("verify", "ping write FAILED: ${e::class.simpleName}: ${e.message}")
-                failSession("Connection lost.")
+                failSession("Connection lost.", generation)
                 return false
             }
             if (!wrote) return false
@@ -673,7 +846,7 @@ class SessionManager(private val context: Context) {
             // `before` above.
         }
         DiagLog.log("verify", "no pong on either attempt, failing session")
-        failSession("Connection lost.")
+        failSession("Connection lost.", generation)
         return false
     }
 
@@ -848,6 +1021,7 @@ class SessionManager(private val context: Context) {
         heartbeatJob?.cancel()
         DiagLog.log("heartbeat", "started")
         heartbeatJob = scope.launch {
+            val generation = connectGeneration
             val start = System.currentTimeMillis()
             while (true) {
                 delay(10_000)
@@ -869,7 +1043,7 @@ class SessionManager(private val context: Context) {
                     // tried to write to it. Detect it here, within 10 s.
                     if (e is kotlinx.coroutines.CancellationException) break
                     DiagLog.log("heartbeat", "ping write FAILED: ${e::class.simpleName}: ${e.message}")
-                    failSession("Connection lost.")
+                    failSession("Connection lost.", generation)
                     break
                 }
             }
@@ -880,16 +1054,63 @@ class SessionManager(private val context: Context) {
         readerJob?.cancel()
         DiagLog.log("reader", "started")
         readerJob = scope.launch {
-            val input = session.socket.inputStream
+            // Generation of the session this reader belongs to. Every
+            // failSession from this reader carries it, so a read
+            // failure landing after a deliberate disconnect (the
+            // socket close wakes the blocked read with "Socket
+            // closed") is ignored instead of setting an error on
+            // Home. See failSession.
+            val generation = connectGeneration
+            val framed = FramedReader(session.socket.inputStream, session.socket)
             try {
                 while (true) {
-                    val header = JSONObject(String(readHeaderBytes(input)))
+                    // A framed message the receive path read ahead (its
+                    // peek for a pending "cancel" after a payload) is
+                    // dispatched before reading from the socket, so it
+                    // is not lost. This is how a batch's next file
+                    // header survives the peek.
+                    val header = pendingHeaders.removeFirstOrNull()
+                        ?: JSONObject(String(framed.readHeader()))
                     when (header.optString("type")) {
                         "file" -> {
                             DiagLog.log("reader", "file header: ${header.optString("name")}")
                             // A file arriving answers a pending download request.
                             if (_downloadState.value is DownloadState.Waiting) _downloadState.value = DownloadState.Idle
-                            receiveFile(session, header, input)
+                            receiveFile(session, header, framed)
+                        }
+                        "cancel" -> {
+                            // The peer cancelled a transfer. Only a cancel
+                            // for the file we are currently sending means
+                            // anything: the send loop pads zeros for the
+                            // remainder and sends "cancel_ack". A cancel
+                            // for a file we already finished sending, or
+                            // for a file we are receiving (the sender's
+                            // post-payload cancel, handled by the peek in
+                            // receiveFile), is ignored: completion stands.
+                            val name = header.optString("name")
+                            DiagLog.log("reader", "cancel: $name")
+                            if (name.isNotEmpty() && name == sendingName) {
+                                peerCancelName = name
+                            }
+                        }
+                        "cancel_ack" -> {
+                            // The peer confirmed a cancel. Two uses: we are
+                            // the receiver, and the sender confirmed our
+                            // cancel, so the .part is deleted and the
+                            // transfer is reported as Cancelled; or we are
+                            // the sender, and the receiver confirmed the
+                            // cancel we sent, so the send loop's wait ends.
+                            val name = header.optString("name")
+                            DiagLog.log("reader", "cancel_ack: $name")
+                            val cancelled = cancelledReceives.remove(name)
+                            if (cancelled != null) {
+                                try { cancelled.first.delete() } catch (_: Exception) {}
+                                _cancellingTransfer.value = false
+                                clearActiveIfNoBatch()
+                                addHistory(name, name, false, cancelled.second, TransferDirection.RECEIVE, TransferStatus.CANCELLED, false)
+                            } else if (name.isNotEmpty() && name == sendingName) {
+                                pendingCancelOutcome?.complete(CancelOutcome.Cancelled)
+                            }
                         }
                         "download_denied" -> {
                             val name = header.optString("name")
@@ -902,10 +1123,23 @@ class SessionManager(private val context: Context) {
                             // Completes the send that is waiting for confirmation.
                             // On success the PC sends the actual saved name, which
                             // may differ from the sent name when it was renamed.
-                            pendingAck?.complete(
-                                AckResult(header.optString("name"), header.optBoolean("ok"), header.optString("reason"))
-                            )
+                            val ack = AckResult(header.optString("name"), header.optBoolean("ok"), header.optString("reason"))
+                            pendingAck?.complete(ack)
                             pendingAck = null
+                            // The ack is also the outcome of a
+                            // sender-initiated cancel: if the receiver
+                            // acked before our "cancel" landed,
+                            // completion stands, so the send loop's wait
+                            // ends with the ack. Only an ack for the file
+                            // currently being sent is recorded. An ack
+                            // with ok false is a rejection, not a win:
+                            // the cancel outcome is Cancelled, as the
+                            // file did not arrive.
+                            if (ack.name.isNotEmpty() && ack.name == sendingName) {
+                                pendingCancelOutcome?.complete(
+                                    if (ack.ok) CancelOutcome.AckWon(ack) else CancelOutcome.Cancelled
+                                )
+                            }
                         }
                         "download_ask" -> {
                             DiagLog.log("reader", "download_ask: ${header.optString("name")}")
@@ -936,7 +1170,7 @@ class SessionManager(private val context: Context) {
                             // interrupted state instead of staying on a dead
                             // Session. Never leave a dead socket behind for
                             // a later send to trip over with Broken pipe.
-                            failSession("The PC ended the session.")
+                            failSession("The PC ended the session.", generation)
                             break
                         }
                         "error" -> {
@@ -958,17 +1192,47 @@ class SessionManager(private val context: Context) {
                 // Home after a clean disconnect.
                 if (e is kotlinx.coroutines.CancellationException) return@launch
                 DiagLog.log("reader", "read FAILED: ${e::class.simpleName}: ${e.message}")
-                pendingAck?.complete(null)
-                pendingAck = null
+                // A stale reader (its session was disconnected while
+                // it was blocked in a read) must not complete the new
+                // session's pending ack either: the ack belongs to
+                // this reader's session, not to whatever is sending
+                // now. failSession's generation guard covers the
+                // error; this covers the ack.
+                if (generation == connectGeneration) {
+                    pendingAck?.complete(null)
+                    pendingAck = null
+                }
                 // Drop the dead socket now. A later send must see
                 // "not connected" instead of writing to a closed
                 // socket and reporting a misleading Broken pipe.
-                failSession(friendlyError(e))
+                failSession(friendlyError(e), generation)
+            } finally {
+                // Only this reader's own generation settles its
+                // cancelled receives. A stale reader (its session was
+                // disconnected while it was blocked in a read) must
+                // not clear the new session's map or its Cancelling
+                // state: the new reader owns those now. A stale
+                // reader's own unsettled .part files are left in the
+                // cache dir; they are never resumable (Android has no
+                // resume protocol) and are overwritten by the next
+                // receive of the same name.
+                if (generation == connectGeneration) {
+                    // A receive cancelled locally that never got its
+                    // "cancel_ack" (the peer died mid-cancel) still has
+                    // its .part deleted: a cancelled receive is never
+                    // resumable, even when the connection is lost first.
+                    // The session is ending, so there is no UI report.
+                    for ((part, _) in cancelledReceives.values) {
+                        try { part.delete() } catch (_: Exception) {}
+                    }
+                    cancelledReceives.clear()
+                    _cancellingTransfer.value = false
+                }
             }
         }
     }
 
-    private suspend fun receiveFile(session: DialResult, header: JSONObject, input: java.io.InputStream) {
+    private suspend fun receiveFile(session: DialResult, header: JSONObject, framed: FramedReader) {
         val name = basenameOnly(header.optString("name"))
         val size = header.optLong("size")
         val expected = header.optString("sha256")
@@ -979,11 +1243,26 @@ class SessionManager(private val context: Context) {
         var received = 0L
         var lastReport = 0L
         val start = System.currentTimeMillis()
+        val input = session.socket.inputStream
+        // This receive is the current one, so cancelTransfer() knows
+        // there is a transfer to cancel. The flags are cleared so a
+        // stale cancel from an earlier receive cannot discard this one.
+        receivingName = name
+        receiveLoopActive = true
+        cancelReceiveRequestedName = null
+        var discarding = false
         try {
             FileOutputStream(part).use { out ->
                 var remaining = size
                 val buf = ByteArray(128 * 1024)
                 while (remaining > 0) {
+                    // Local cancel: stop writing, discard the remaining
+                    // payload bytes. The sender pads the rest with
+                    // zeros, so exactly size bytes are consumed and the
+                    // next framed message is read as a message. The
+                    // .part is deleted when "cancel_ack" arrives, not
+                    // here.
+                    if (cancelReceiveRequestedName == name) discarding = true
                     val toRead = minOf(buf.size.toLong(), remaining).toInt()
                     var read = 0
                     while (read < toRead) {
@@ -991,12 +1270,16 @@ class SessionManager(private val context: Context) {
                         if (r < 0) throw java.io.EOFException("session closed during file")
                         read += r
                     }
-                    out.write(buf, 0, read)
-                    digest.update(buf, 0, read)
+                    if (!discarding) {
+                        out.write(buf, 0, read)
+                        digest.update(buf, 0, read)
+                    }
                     remaining -= read
                     received += read
                     val now = System.currentTimeMillis()
-                    if (now - lastReport >= 100 || remaining == 0L) {
+                    // While discarding, the UI shows "Cancelling…"
+                    // instead, so no progress is reported.
+                    if (!discarding && (now - lastReport >= 100 || remaining == 0L)) {
                         lastReport = now
                         val elapsed = ((now - start) / 1000.0).coerceAtLeast(0.1)
                         val speed = received / elapsed
@@ -1005,21 +1288,57 @@ class SessionManager(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
+            receiveLoopActive = false
+            receivingName = null
             clearActiveIfNoBatch()
             addHistory(name, name, false, received, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
             _transferError.value = "receive failed: ${e.message}"
             return
         }
+        receiveLoopActive = false
+        if (discarding) {
+            // The local user cancelled this receive. Register it so
+            // the reader settles it when "cancel_ack" arrives: the
+            // .part is deleted and the transfer is reported as
+            // Cancelled. No SHA check, no rename, no ack. The session
+            // stays open for the next transfer.
+            cancelledReceives[name] = part to size
+            receivingName = null
+            return
+        }
+        // The sender may have cancelled its own send: it padded the
+        // payload with zeros and sent "cancel" right after. Peek for
+        // it before the SHA check, rename, and ack, so a cancel that
+        // landed first wins and no ack is sent.
+        val peeked = try {
+            framed.peekHeader(CANCEL_PEEK_TIMEOUT_MS)?.let { JSONObject(String(it)) }
+        } catch (_: Exception) {
+            null
+        }
+        if (peeked != null) {
+            if (peeked.optString("type") == "cancel" && peeked.optString("name") == name) {
+                try { part.delete() } catch (_: Exception) {}
+                sendCancelAck(session.socket, name)
+                clearActiveIfNoBatch()
+                addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.CANCELLED, false)
+                receivingName = null
+                return
+            }
+            // Not a cancel for this file: queue it for the reader.
+            pendingHeaders.addLast(peeked)
+        }
         // 100% of bytes is not success yet: verify the hash, then save.
         _busyPhase.value = BusyPhase.VERIFYING
         val ok = digest.digest().joinToString("") { "%02x".format(it) } == expected.lowercase()
         if (!ok) {
+            receivingName = null
             clearActiveIfNoBatch()
             addHistory(name, name, false, size, TransferDirection.RECEIVE, TransferStatus.FAILED, false)
             sendAck(session, name, false, "SHA-256 mismatch")
             return
         }
         val saved = saveReceived(part, name)
+        receivingName = null
         when (saved) {
             is SaveResult.Saved -> {
                 clearActiveIfNoBatch()
@@ -1158,6 +1477,9 @@ class SessionManager(private val context: Context) {
     /** Outcome of one awaitable file send. */
     sealed interface SendOutcome {
         data class Sent(val savedName: String, val size: Long) : SendOutcome
+        /** Stopped by a transfer-level cancel (local or peer). The
+         * session stays open; the file is recorded as Cancelled. */
+        object Cancelled : SendOutcome
         data class NotSent(val reason: String) : SendOutcome
     }
 
@@ -1229,6 +1551,10 @@ class SessionManager(private val context: Context) {
         onWaitingAck: (() -> Unit)? = null
     ): SendOutcome {
         val s = socket ?: run { _transferError.value = "Not connected. Join the PC and try again."; return SendOutcome.NotSent("not connected") }
+        // Generation of this session: a cancel outcome is recorded
+        // only when it still matches, so a late outcome cannot land
+        // in a new session's history after a disconnect and rejoin.
+        val generation = connectGeneration
         if (preflight) {
             // The session can have died since the last heartbeat (at most
             // 10 s ago). Ping and wait for the pong before spooling a
@@ -1264,12 +1590,48 @@ class SessionManager(private val context: Context) {
             val ackDeferred = CompletableDeferred<AckResult?>()
             pendingAck?.complete(null)
             pendingAck = ackDeferred
+            // This send is the current one: the reader only records a
+            // cancel outcome for this name, and the cancel flags are
+            // cleared so a stale cancel from an earlier send cannot
+            // stop this one.
+            sendingName = name
+            cancelSendRequestedName = null
+            peerCancelName = null
+            pendingCancelOutcome = null
+            var peerCancelPending = false
+            var localCancelPending = false
             try {
                 sendMutex.withLock {
                     writeHeader(s.outputStream, header.toString().toByteArray())
                     FileInputStream(spool).use { inp ->
                         val buf = ByteArray(128 * 1024)
+                        sendLoopActive = true
                         while (true) {
+                            // Cancel check, between chunks. Only while
+                            // bytes remain: once sent == size the file
+                            // is fully sent and the receiver will
+                            // complete it, so a cancel landing then is
+                            // too late and is ignored. The reader is the
+                            // only coroutine that reads the socket, so
+                            // these are flags it set, not a socket poll.
+                            if (sent < size) {
+                                if (peerCancelName == name) {
+                                    // The peer cancelled our send.
+                                    // Drain to the declared size with
+                                    // zeros, confirm, and stop. A
+                                    // cancelled send is never resumed.
+                                    peerCancelPending = true
+                                    break
+                                }
+                                if (cancelSendRequestedName == name) {
+                                    // The local user cancelled. Drain
+                                    // to the declared size with zeros,
+                                    // send "cancel", and wait for the
+                                    // receiver's answer outside the lock.
+                                    localCancelPending = true
+                                    break
+                                }
+                            }
                             val r = inp.read(buf)
                             if (r < 0) break
                             if (r == 0) continue
@@ -1284,8 +1646,56 @@ class SessionManager(private val context: Context) {
                                 onProgress?.invoke(sent, size, speed)
                             }
                         }
+                        sendLoopActive = false
                         s.outputStream.flush()
                     }
+                }
+                if (peerCancelPending) {
+                    peerCancelName = null
+                    sendMutex.withLock {
+                        padZeros(s.outputStream, size - sent)
+                        writeHeader(s.outputStream, JSONObject().apply { put("type", "cancel_ack"); put("name", name) }.toString().toByteArray())
+                        s.outputStream.flush()
+                    }
+                    clearActiveIfSingle(isBatch)
+                    _cancellingTransfer.value = false
+                    if (generation == connectGeneration && _connection.value == ConnectionState.CONNECTED) {
+                        addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.CANCELLED, false)
+                    }
+                    return SendOutcome.Cancelled
+                }
+                if (localCancelPending) {
+                    cancelSendRequestedName = null
+                    // Assign the outcome deferred BEFORE sending
+                    // "cancel": the receiver's answer can arrive within
+                    // microseconds, and a completion against a null
+                    // field would be lost and the wait would time out.
+                    val outcomeDeferred = CompletableDeferred<CancelOutcome?>()
+                    pendingCancelOutcome = outcomeDeferred
+                    sendMutex.withLock {
+                        padZeros(s.outputStream, size - sent)
+                        writeHeader(s.outputStream, JSONObject().apply { put("type", "cancel"); put("name", name) }.toString().toByteArray())
+                        s.outputStream.flush()
+                    }
+                    // Wait for the receiver's answer: cancel_ack (cancel
+                    // won) or ack (completion won the race). A timeout
+                    // means the receiver never answered; treat it as
+                    // cancelled, as the PC does.
+                    val outcome = withTimeoutOrNull(CANCEL_OUTCOME_TIMEOUT_MS) { outcomeDeferred.await() }
+                    pendingCancelOutcome = null
+                    clearActiveIfSingle(isBatch)
+                    _cancellingTransfer.value = false
+                    if (generation != connectGeneration || _connection.value != ConnectionState.CONNECTED) {
+                        return SendOutcome.NotSent("connection lost")
+                    }
+                    if (outcome is CancelOutcome.AckWon) {
+                        // Completion won the race: the receiver already
+                        // acked, so the file was received.
+                        addHistory(name, outcome.ack.name, outcome.ack.name != name, size, TransferDirection.SEND, TransferStatus.SUCCESS, true)
+                        return SendOutcome.Sent(outcome.ack.name, size)
+                    }
+                    addHistory(name, name, false, size, TransferDirection.SEND, TransferStatus.CANCELLED, false)
+                    return SendOutcome.Cancelled
                 }
                 // Do not call it sent until the PC confirms it: the PC
                 // acks only after reading every byte, verifying the
@@ -1319,6 +1729,9 @@ class SessionManager(private val context: Context) {
             _transferError.value = "send failed: ${e.message}"
             return SendOutcome.NotSent(e.message ?: "send failed")
         } finally {
+            sendingName = null
+            sendLoopActive = false
+            pendingCancelOutcome = null
             spool.delete()
         }
     }
@@ -1436,6 +1849,13 @@ class SessionManager(private val context: Context) {
                     sent++
                     updateBatchItem(index) { it.copy(phase = BatchItemPhase.SENT, savedName = outcome.savedName, transferredBytes = outcome.size) }
                     _batch.update { it?.copy(sentCount = sent) }
+                }
+                is SendOutcome.Cancelled -> {
+                    // The file was cancelled (locally or by the peer).
+                    // The batch stops here, as if the user cancelled
+                    // it; the session stays open.
+                    updateBatchItem(index) { it.copy(phase = BatchItemPhase.FAILED) }
+                    return finishBatchCancelled(sent, items.size)
                 }
                 is SendOutcome.NotSent -> {
                     updateBatchItem(index) { it.copy(phase = BatchItemPhase.FAILED) }

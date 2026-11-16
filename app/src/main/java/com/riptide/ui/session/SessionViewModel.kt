@@ -45,6 +45,7 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
             viewModelScope.launch { s.pendingReceive.collect { p -> _uiState.update { it.copy(pendingReceive = p) } } }
             viewModelScope.launch { s.batch.collect { b -> _uiState.update { recompute(it.copy(batchState = b)) } } }
             viewModelScope.launch { s.batchMessage.collect { m -> _uiState.update { it.copy(batchMessage = m) } } }
+            viewModelScope.launch { s.cancellingTransfer.collect { c -> _uiState.update { it.copy(isCancellingTransfer = c) } } }
             viewModelScope.launch {
                 s.connection.collect { c ->
                     val connected = c == ConnectionState.CONNECTED
@@ -82,6 +83,7 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
             state.activeTransfer == null &&
             state.busyPhase == null &&
             state.batchState == null &&
+            !state.isCancellingTransfer &&
             state.downloadState !is DownloadState.Waiting
         return state.copy(canStartTransfer = canStart)
     }
@@ -115,6 +117,10 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
         _uiState.update { recompute(it.copy(downloadState = state)) }
     }
 
+    fun setCancellingTransfer(cancelling: Boolean) {
+        _uiState.update { recompute(it.copy(isCancellingTransfer = cancelling)) }
+    }
+
     fun addTransferRecord(record: TransferRecord) {
         _uiState.update { state ->
             recompute(state.copy(activeTransfer = null, busyPhase = null, transferHistory = listOf(record) + state.transferHistory))
@@ -129,8 +135,12 @@ class SessionViewModel(private val session: SessionManager? = null) : ViewModel(
         session?.clearDownloadDenied()
     }
 
+    /** Cancel the active transfer and keep the session connected. No
+     * confirmation: the tap starts cancelling at once. When there is
+     * nothing to cancel (the transfer already committed) the call is
+     * a no-op and the transfer completes normally. */
     fun onCancelTransfer() {
-        session?.disconnect()
+        session?.cancelTransfer()
     }
 
     fun onCancelBatch() {
