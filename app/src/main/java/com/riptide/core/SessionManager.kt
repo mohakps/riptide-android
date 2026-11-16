@@ -567,23 +567,30 @@ class SessionManager(private val context: Context) {
                     }
                     listOf(DialCandidate(validation.host, family, kind))
                 }
+                // The peer key is what the user typed: a hostname
+                // stays a hostname in Recent devices, a literal IP
+                // stays that IP. The dial itself still connects to
+                // the resolved candidate IP; only the stored
+                // identity changes, so a hostname whose IP moves
+                // still resolves and rejoins.
+                val peerKey = validation.host
                 val host = candidates.first().host
-                currentHost = host
-                _peerHost.value = host
-                val session = dialCandidates(candidates)
-                DiagLog.log("session", "dial ok host=$host device=${session.peerDevice}")
+                currentHost = peerKey
+                _peerHost.value = peerKey
+                val session = dialCandidates(candidates, peerKey)
+                DiagLog.log("session", "dial ok peer=$peerKey via host=$host device=${session.peerDevice}")
                 // A late success after Cancel must never open a session.
                 if (generation != attemptGeneration) {
                     try { session.socket.close() } catch (_: Exception) {}
                     return@launch
                 }
-                _peerName.value = session.peerDevice.ifBlank { host }
+                _peerName.value = session.peerDevice.ifBlank { peerKey }
                 _approval.value = null
                 _approvalPhase.value = ApprovalPhase.NONE
                 _attemptLabel.value = null
                 _connection.value = ConnectionState.CONNECTED
-                DiagLog.log("session", "CONNECTED host=$host")
-                lastConnectedHost = host
+                DiagLog.log("session", "CONNECTED peer=$peerKey")
+                lastConnectedHost = peerKey
                 // A new session starts with an empty transfer list: the
                 // Session page shows THIS SESSION only, never the
                 // previous session's transfers. The durable received
@@ -591,10 +598,11 @@ class SessionManager(private val context: Context) {
                 _history.value = emptyList()
                 _batchMessage.value = null
                 // The PC's device name arrives in hello_ok. Pass it so
-                // the saved peer shows (device name, ip) instead of
-                // (ip, ip): dial saved a new peer as name = host
-                // because the name was not known yet.
-                peers.markConnected(host, session.peerDevice)
+                // the saved peer shows (device name, host) instead of
+                // (host, host): dial saved a new peer as name = peerKey
+                // before the hello exchange (the device name is not
+                // known yet).
+                peers.markConnected(peerKey, session.peerDevice)
                 _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
                 startSessionService()
                 startReader(session)
@@ -882,8 +890,13 @@ class SessionManager(private val context: Context) {
      * receive (waiting for the folder choice) carries it. */
     data class DialResult(val socket: SSLSocket, val peerDevice: String, val serverFingerprint: String)
 
+    /** Dial one candidate address. [host] is the address actually
+     * connected to; [peerKey] is what the user typed and is the key
+     * the peer is looked up, saved and trusted under, so a hostname
+     * join is remembered as the hostname, not the IP it resolved
+     * to. The hello exchange still carries the dialled address. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    private suspend fun dial(host: String, timeoutMs: Long = JOIN_TOTAL_WINDOW_MS): DialResult {
+    private suspend fun dial(host: String, timeoutMs: Long = JOIN_TOTAL_WINDOW_MS, peerKey: String = host): DialResult {
         val capturing = object : X509TrustManager {
             var chain: Array<X509Certificate>? = null
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
@@ -910,7 +923,7 @@ class SessionManager(private val context: Context) {
             ?: tls.session.peerCertificates.firstOrNull()?.encoded
             ?: throw IllegalStateException("host certificate missing")
         val serverFp = certFingerprint(serverDer)
-        val saved = peers.loadPeers().firstOrNull { it.host == host }
+        val saved = peers.loadPeers().firstOrNull { it.host == peerKey }
         val status: TrustStatus
         val oldFp: String
         val oldCode: String?
@@ -924,7 +937,7 @@ class SessionManager(private val context: Context) {
                 approvalDecision = { allow -> if (cont.isActive) cont.resume(allow) {} }
                 _approvalPhase.value = ApprovalPhase.LOCAL_TRUST
                 _approval.value = ApprovalRequest(
-                    host = host, code = derive6DigitCode(serverFp), fullFingerprint = serverFp,
+                    host = peerKey, code = derive6DigitCode(serverFp), fullFingerprint = serverFp,
                     trustStatus = status, oldCode = oldCode, oldFingerprint = oldFp.ifBlank { null }
                 )
             }
@@ -938,7 +951,7 @@ class SessionManager(private val context: Context) {
             // (set by approveConnection) showing the PHONE's code until the
             // host acknowledges with hello_ok below. Do not clear it here.
             if (status == TrustStatus.NEW || status == TrustStatus.CHANGED) {
-                peers.savePeer(SavedPeerRecord(name = host, host = host, fingerprint = serverFp))
+                peers.savePeer(SavedPeerRecord(name = peerKey, host = peerKey, fingerprint = serverFp))
                 _savedPeers.value = peers.loadPeers().sortedByDescending { it.lastSuccessfulConnection }
             }
         }
@@ -987,8 +1000,11 @@ class SessionManager(private val context: Context) {
      * Cancel keeps the field: dialCandidates only throws, it never
      * touches the form. When every candidate times out, the failure
      * is the J8 timeout message; when the last failure is a refusal
-     * (or anything else), that failure surfaces instead. */
-    private suspend fun dialCandidates(candidates: List<DialCandidate>): DialResult {
+     * (or anything else), that failure surfaces instead. [peerKey]
+     * is what the user typed (hostname or literal IP) and is the key
+     * the peer is stored and trusted under; each candidate is only
+     * the address actually dialled. */
+    private suspend fun dialCandidates(candidates: List<DialCandidate>, peerKey: String): DialResult {
         val deadline = System.currentTimeMillis() + JOIN_TOTAL_WINDOW_MS
         var lastError: Exception? = null
         var allTimedOut = true
@@ -997,7 +1013,7 @@ class SessionManager(private val context: Context) {
             _attemptLabel.value = candidateLabel(candidate.kind)
             DiagLog.log("session", "trying ${candidate.kind} host=${candidate.host} remaining=${remaining}ms")
             try {
-                val result = dial(candidate.host, remaining)
+                val result = dial(candidate.host, remaining, peerKey)
                 _attemptLabel.value = null
                 return result
             } catch (e: Exception) {

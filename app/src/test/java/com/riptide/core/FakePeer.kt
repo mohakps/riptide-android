@@ -1,5 +1,6 @@
 package com.riptide.core
 
+import com.riptide.util.certFingerprint
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.InetAddress
@@ -57,6 +58,11 @@ class FakePeer {
             .generateCertificate(der.inputStream()) as java.security.cert.X509Certificate
         Triple(kp, cert, der)
     }
+
+    /** SHA-256 fingerprint of this peer's certificate, as the phone
+     * computes it: tests scope their saved-peer assertions to it,
+     * because the peer store persists across tests in one run. */
+    val fingerprint: String = certFingerprint(identity.third)
 
     private var server: SSLServerSocket? = null
     private var conn: SSLSocket? = null
