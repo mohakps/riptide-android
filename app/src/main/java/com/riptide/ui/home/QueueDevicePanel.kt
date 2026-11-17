@@ -41,15 +41,24 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.IntrinsicMeasurable
+import androidx.compose.ui.layout.IntrinsicMeasureScope
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.MeasurePolicy
+import androidx.compose.ui.layout.MeasureResult
+import androidx.compose.ui.layout.MeasureScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -133,12 +142,19 @@ fun QueueDevicePanel(
                 anim.snapTo((dragStartProgress - dragTotal / totalPx).coerceIn(0f, 1f))
             }
         }
-        // height(IntrinsicSize.Min) matches the two panels' heights.
-        // Nothing under this Row may be a SubcomposeLayout
-        // (BoxWithConstraints, lazy list, TabRow): one under it
-        // crashed the first draw with files staged (v0.9.9).
-        // StackedDeviceIdentity's forceHorizontal path renders
-        // without BoxWithConstraints for exactly this reason.
+        // The row height is the taller of the two contents measured
+        // at their FULL expanded width, and it does not change as
+        // progress animates. height(IntrinsicSize.Min) asks each card
+        // for its min intrinsic height at the card's CURRENT width;
+        // the contents answer through FullWidthContent, which always
+        // measures them at the wide width (see below). That is what
+        // keeps the height constant: without it the device content,
+        // measured at the 55 dp tab width, wraps its text into many
+        // lines and the row grows to ~735 dp on the phone (v0.9.10).
+        // FullWidthContent is a plain Layout with explicit intrinsic
+        // answers, not a SubcomposeLayout, so it can sit under this
+        // Row (a SubcomposeLayout here crashed the first draw in
+        // v0.9.9: it cannot answer intrinsic measurements).
         Row(
             Modifier
                 .fillMaxWidth()
@@ -173,11 +189,15 @@ fun QueueDevicePanel(
                     .clip(RoundedCornerShape(24.dp))
                     .background(lerp(T.Surface, T.Primary, progress))
             ) {
-                // Open content: slides left and fades as the panel
-                // collapses, with a light blur while moving.
+                // Open content: measured once at the full wide width
+                // (FullWidthContent), so it never re-measures as the
+                // card animates. It slides left and fades as the panel
+                // collapses, with a light blur while moving; the card's
+                // clip cuts it to the card's current rounded bounds.
                 val queueAlpha = QueuePanelMath.queueContentAlpha(progress)
-                Box(
-                    Modifier
+                FullWidthContent(
+                    fullWidth = wide,
+                    modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
                             alpha = queueAlpha
@@ -186,9 +206,12 @@ fun QueueDevicePanel(
                             }
                         }
                         .panelBlur(QueuePanelMath.blurDp(queueAlpha))
-                        .padding(20.dp)
                 ) {
-                    Column(Modifier.fillMaxSize()) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 20.dp, vertical = 19.dp)
+                    ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 painterResource(R.drawable.riptide_file_clock), null,
@@ -245,16 +268,27 @@ fun QueueDevicePanel(
                 // white right-pointing arrow. Full tab tappable. The
                 // tap target is only live while the queue is collapsed:
                 // at alpha 0 it sits above the open content and must
-                // not swallow its taps.
+                // not swallow its taps. A DISABLED clickable still
+                // consumes the down event (its detectTapAndPress runs
+                // regardless of enabled), so the clickable is only
+                // attached while the tab is live; while it is not, the
+                // tab is a plain visual layer with a disabled
+                // semantics marker, and taps pass through to the
+                // content below.
+                val queueTabLive = progress > 0.5f
                 Box(
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = QueuePanelMath.queueTabAlpha(progress) }
-                        .clickable(
-                            enabled = progress > 0.5f,
-                            role = Role.Button, onClickLabel = "Show file queue"
-                        ) { settleTo(0f) }
-                        .semantics { contentDescription = "Show file queue" },
+                        .then(
+                            if (queueTabLive) Modifier.clickable(
+                                role = Role.Button, onClickLabel = "Show file queue"
+                            ) { settleTo(0f) } else Modifier
+                        )
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = "Show file queue"
+                            if (!queueTabLive) disabled()
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -281,10 +315,14 @@ fun QueueDevicePanel(
             ) {
                 // Open content: the existing identity composition,
                 // forced horizontal so the panel height stays stable
-                // while it slides. Slides in from the right and fades.
+                // while it slides. Measured once at the full wide
+                // width (FullWidthContent), so the code and device
+                // name never re-wrap mid-animation. Slides in from
+                // the right and fades.
                 val deviceAlpha = QueuePanelMath.deviceContentAlpha(progress)
-                Box(
-                    Modifier
+                FullWidthContent(
+                    fullWidth = wide,
+                    modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
                             alpha = deviceAlpha
@@ -305,16 +343,24 @@ fun QueueDevicePanel(
                 // Collapsed tab: dark phone glyph above a dark
                 // left-pointing arrow on ivory. Full tab tappable.
                 // Only live while device info is collapsed, for the
-                // same reason as the queue tab above.
+                // same reason as the queue tab above: while device
+                // info is open this overlay sits above the code and
+                // fingerprint tiles, and a disabled clickable would
+                // swallow their taps.
+                val deviceTabLive = progress < 0.5f
                 Box(
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = QueuePanelMath.deviceTabAlpha(progress) }
-                        .clickable(
-                            enabled = progress < 0.5f,
-                            role = Role.Button, onClickLabel = "Show device info"
-                        ) { settleTo(1f) }
-                        .semantics { contentDescription = "Show device info" },
+                        .then(
+                            if (deviceTabLive) Modifier.clickable(
+                                role = Role.Button, onClickLabel = "Show device info"
+                            ) { settleTo(1f) } else Modifier
+                        )
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = "Show device info"
+                            if (!deviceTabLive) disabled()
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -332,6 +378,81 @@ fun QueueDevicePanel(
             }
         }
     }
+}
+
+/**
+ * Lays [content] out once at the fixed [fullWidth] and reports the
+ * size its parent gives it, so the content never re-measures while
+ * the card around it animates. The content overflows to the right
+ * when the card is narrower than [fullWidth]; the card's clip cuts
+ * it to the card's current rounded bounds (the pack: content slides
+ * with its card, clipped to the card's bounds every frame).
+ *
+ * The row above sizes itself with height(IntrinsicSize.Min), which
+ * asks each card for its min intrinsic height at the card's CURRENT
+ * width. This answers that query at [fullWidth] instead, so the row
+ * height is the taller of the two contents at full width and stays
+ * constant through the whole expand/collapse. A plain Layout with
+ * explicit intrinsic answers, not a SubcomposeLayout: it can sit
+ * under the intrinsic-measuring Row (a SubcomposeLayout there
+ * crashed the first draw in v0.9.9).
+ *
+ * Internal (not private) so the measurement can be unit-tested
+ * directly; the panel-level tests cannot observe a measured width
+ * through the card's clip.
+ */
+@Composable
+internal fun FullWidthContent(
+    fullWidth: Dp,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Layout(
+        content = content,
+        modifier = modifier,
+        measurePolicy = remember(fullWidth) { FullWidthMeasurePolicy(fullWidth) }
+    )
+}
+
+private class FullWidthMeasurePolicy(private val fullWidth: Dp) : MeasurePolicy {
+    override fun MeasureScope.measure(
+        measurables: List<Measurable>,
+        constraints: Constraints
+    ): MeasureResult {
+        val fullPx = fullWidth.roundToPx()
+        // The card always gives a finite height (the Row resolves it
+        // through intrinsics first). If some future parent does not,
+        // cap the child at its own intrinsic height instead of
+        // letting a fillMaxSize child ask for infinite height.
+        val maxHeight = if (constraints.maxHeight == Constraints.Infinity) {
+            measurables.first().minIntrinsicHeight(fullPx)
+        } else {
+            constraints.maxHeight
+        }
+        val placeable = measurables.first().measure(
+            Constraints.fixedWidth(fullPx).copy(maxHeight = maxHeight)
+        )
+        val width = if (constraints.maxWidth == Constraints.Infinity) placeable.width else constraints.maxWidth
+        val height = if (constraints.maxHeight == Constraints.Infinity) placeable.height else constraints.maxHeight
+        return layout(width, height) {
+            placeable.place(0, 0)
+        }
+    }
+
+    // Intrinsic answers are always at the full width, never at the
+    // card's current (possibly collapsed) width: that is what keeps
+    // the row height constant and stops the text re-wrapping.
+    override fun IntrinsicMeasureScope.minIntrinsicHeight(measurables: List<IntrinsicMeasurable>, width: Int): Int =
+        measurables.first().minIntrinsicHeight(fullWidth.roundToPx())
+
+    override fun IntrinsicMeasureScope.maxIntrinsicHeight(measurables: List<IntrinsicMeasurable>, width: Int): Int =
+        measurables.first().maxIntrinsicHeight(fullWidth.roundToPx())
+
+    override fun IntrinsicMeasureScope.minIntrinsicWidth(measurables: List<IntrinsicMeasurable>, height: Int): Int =
+        measurables.first().minIntrinsicWidth(height)
+
+    override fun IntrinsicMeasureScope.maxIntrinsicWidth(measurables: List<IntrinsicMeasurable>, height: Int): Int =
+        measurables.first().maxIntrinsicWidth(height)
 }
 
 /** Blur for moving panel content. RenderEffect blur needs Android S;
