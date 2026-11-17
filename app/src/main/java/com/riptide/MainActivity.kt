@@ -12,6 +12,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
@@ -30,7 +31,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -51,6 +51,7 @@ import com.riptide.ui.host.HostScreen
 import com.riptide.ui.host.HostViewModel
 import com.riptide.ui.model.ApprovalPhase
 import com.riptide.ui.navigation.RiptideTab
+import com.riptide.ui.navigation.RiptideTabSurfaces
 import com.riptide.ui.received.ReceivedScreen
 import com.riptide.ui.received.ReceivedViewModel
 import com.riptide.ui.session.SessionScreen
@@ -65,7 +66,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 
 /**
  * One shared three-tab scaffold; the single SessionManager is owned here
@@ -349,29 +349,8 @@ class MainActivity : ComponentActivity() {
                     // navigation bar; each screen's own Scaffold handles
                     // its top bar and scrolling inside this area.
                     val contentModifier = Modifier.padding(padding)
-                    // Main-tab swipes, pack section 4: Transfer ->
-                    // Devices -> Received while the queue is empty and
-                    // the queue sheet is closed. While any files are
-                    // queued, horizontal swipes stay with the
-                    // queue/device-info switch on Home, and the bottom
-                    // navigation still selects tabs directly. At either
-                    // end a swipe settles on the current tab.
-                    val queueEmpty = (homeUiState.outgoingQueue?.includedCount ?: 0) == 0
-                    val tabSwipe = Modifier.tabSwipe(
-                        enabled = queueEmpty && !homeUiState.queueSheetOpen,
-                        onSwipeLeft = {
-                            val tabs = RiptideTab.values()
-                            val next = tabs.indexOf(currentTab) + 1
-                            if (next < tabs.size) currentTab = tabs[next]
-                        },
-                        onSwipeRight = {
-                            val tabs = RiptideTab.values()
-                            val prev = tabs.indexOf(currentTab) - 1
-                            if (prev >= 0) currentTab = tabs[prev]
-                        }
-                    )
-                    when {
-                        settingsOpen -> SettingsScreen(
+                    if (settingsOpen) {
+                        SettingsScreen(
                             viewModel = settingsVm,
                             onBack = ::closeSettings,
                             onShowFingerprint = { fingerprintOpen = true },
@@ -383,53 +362,65 @@ class MainActivity : ComponentActivity() {
                             onShareDiagnostics = ::shareDiagnostics,
                             modifier = contentModifier
                         )
-                        currentTab == RiptideTab.Devices -> DevicesScreen(
-                            viewModel = devicesVm,
-                            onNavigateToSettings = ::openSettings,
-                            onJoinPeer = { peer ->
-                                homeVm.joinPeer(peer)
-                                currentTab = RiptideTab.Transfer
-                            },
-                            onGoToTransfer = { currentTab = RiptideTab.Transfer },
-                            modifier = contentModifier.then(tabSwipe)
-                        )
-                        currentTab == RiptideTab.Received -> ReceivedScreen(
-                            viewModel = receivedVm,
-                            onNavigateToSettings = ::openSettings,
-                            onGoToTransfer = { currentTab = RiptideTab.Transfer },
-                            modifier = contentModifier.then(tabSwipe)
-                        )
-                        connection == ConnectionState.CONNECTED ||
-                            (connection == ConnectionState.FAILED && sessionUiState.showInterrupted) -> SessionScreen(
-                            viewModel = sessionVm,
-                            onPickFileToSend = { pickFile.launch(arrayOf("*/*")) },
-                            onPickReceiveFolder = {
-                                launchReceiveFolderPicker { uri ->
-                                    if (uri != null) sessionVm.resolvePendingReceiveChooseFolder(uri)
-                                }
-                            },
-                            onDisconnect = { /* already on Transfer; IDLE shows Home */ },
-                            onBackToJoin = { currentTab = RiptideTab.Transfer },
-                            onNavigateToSettings = ::openSettings,
-                            modifier = contentModifier.then(tabSwipe)
-                        )
-                        createServerOpen -> HostScreen(
-                            viewModel = hostVm,
-                            onBack = ::closeCreateServer,
-                            onRoleSwap = {
-                                closeCreateServer()
-                                currentTab = RiptideTab.Transfer
-                            },
-                            modifier = contentModifier
-                        )
-                        else -> HomeScreen(
-                            viewModel = homeVm,
-                            onNavigateToSettings = ::openSettings,
-                            onShowFingerprint = { fingerprintOpen = true },
-                            onShowAllDevices = { currentTab = RiptideTab.Devices },
-                            onOpenCreateServer = ::openCreateServer,
-                            modifier = contentModifier.then(tabSwipe)
-                        )
+                    } else {
+                        RiptideTabSurfaces(
+                            selected = currentTab,
+                            onSelect = { currentTab = it },
+                            swipeEnabled = (homeUiState.outgoingQueue?.includedCount ?: 0) == 0 &&
+                                !homeUiState.queueSheetOpen && !createServerOpen && !fingerprintOpen &&
+                                hostApproval == null && approval == null,
+                            modifier = contentModifier.fillMaxSize()
+                        ) { tab ->
+                            when {
+                                tab == RiptideTab.Devices -> DevicesScreen(
+                                    viewModel = devicesVm,
+                                    onNavigateToSettings = ::openSettings,
+                                    onJoinPeer = { peer ->
+                                        homeVm.joinPeer(peer)
+                                        currentTab = RiptideTab.Transfer
+                                    },
+                                    onGoToTransfer = { currentTab = RiptideTab.Transfer },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                tab == RiptideTab.Received -> ReceivedScreen(
+                                    viewModel = receivedVm,
+                                    onNavigateToSettings = ::openSettings,
+                                    onGoToTransfer = { currentTab = RiptideTab.Transfer },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                connection == ConnectionState.CONNECTED ||
+                                    (connection == ConnectionState.FAILED && sessionUiState.showInterrupted) -> SessionScreen(
+                                    viewModel = sessionVm,
+                                    onPickFileToSend = { pickFile.launch(arrayOf("*/*")) },
+                                    onPickReceiveFolder = {
+                                        launchReceiveFolderPicker { uri ->
+                                            if (uri != null) sessionVm.resolvePendingReceiveChooseFolder(uri)
+                                        }
+                                    },
+                                    onDisconnect = { /* already on Transfer; IDLE shows Home */ },
+                                    onBackToJoin = { currentTab = RiptideTab.Transfer },
+                                    onNavigateToSettings = ::openSettings,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                createServerOpen -> HostScreen(
+                                    viewModel = hostVm,
+                                    onBack = ::closeCreateServer,
+                                    onRoleSwap = {
+                                        closeCreateServer()
+                                        currentTab = RiptideTab.Transfer
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                else -> HomeScreen(
+                                    viewModel = homeVm,
+                                    onNavigateToSettings = ::openSettings,
+                                    onShowFingerprint = { fingerprintOpen = true },
+                                    onShowAllDevices = { currentTab = RiptideTab.Devices },
+                                    onOpenCreateServer = ::openCreateServer,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -478,66 +469,3 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
-/**
- * Horizontal swipe between the three main tabs, built from scratch:
- * no pager or swipeable exists in the app. One gesture decision per
- * touch: horizontal movement must pass touch slop and clearly dominate
- * vertical movement before the swipe takes over; vertical scrolling is
- * left alone, and touches starting at the screen edges are left to the
- * Android system gestures. A swipe commits on lift past 40 dp of net
- * horizontal travel; a short or cancelled drag changes nothing. Once
- * the swipe takes over, the gesture is consumed, so a completed swipe
- * never also activates a card underneath.
- */
-private fun Modifier.tabSwipe(
-    enabled: Boolean,
-    onSwipeLeft: () -> Unit,
-    onSwipeRight: () -> Unit
-): Modifier = this.then(
-    Modifier.pointerInput(enabled) {
-        if (!enabled) return@pointerInput
-        val slop = viewConfiguration.touchSlop
-        val commitDistancePx = 40.dp.toPx()
-        val edgeWidthPx = 20.dp.toPx()
-        awaitPointerEventScope {
-            while (true) {
-                val down = awaitPointerEvent()
-                val first = down.changes.firstOrNull() ?: continue
-                if (!first.pressed) continue
-                // System edge gestures own the outer 20 dp.
-                if (first.position.x < edgeWidthPx ||
-                    first.position.x > size.width - edgeWidthPx
-                ) {
-                    continue
-                }
-                var totalX = 0f
-                var totalY = 0f
-                var decided = false
-                while (true) {
-                    val event = awaitPointerEvent()
-                    val change = event.changes.firstOrNull() ?: break
-                    if (!change.pressed) {
-                        if (decided && abs(totalX) > commitDistancePx) {
-                            if (totalX < 0f) onSwipeLeft() else onSwipeRight()
-                        }
-                        break
-                    }
-                    val dx = change.position.x - change.previousPosition.x
-                    val dy = change.position.y - change.previousPosition.y
-                    totalX += dx
-                    totalY += dy
-                    if (!decided) {
-                        if (abs(totalX) > slop && abs(totalX) > abs(totalY) * 1.5f) {
-                            decided = true
-                        } else if (abs(totalY) > slop) {
-                            // Vertical won: leave the gesture to scrolling.
-                            break
-                        }
-                    }
-                    if (decided) change.consume()
-                }
-            }
-        }
-    }
-)

@@ -156,7 +156,7 @@ class SessionManager(private val context: Context) {
      * deliberate disconnect and sends when the user reconnects. */
     private val _batch = MutableStateFlow<BatchState?>(null)
     val batch: StateFlow<BatchState?> = _batch.asStateFlow()
-    /** Outcome of the last finished batch ("Batch sent · 5 files"),
+    /** Outcome of the last interrupted or cancelled batch,
      * cleared when a new transfer starts. */
     private val _batchMessage = MutableStateFlow<String?>(null)
     val batchMessage: StateFlow<String?> = _batchMessage.asStateFlow()
@@ -2076,11 +2076,7 @@ class SessionManager(private val context: Context) {
                 // clears silently. Either way a file appended after
                 // this check still survives (see
                 // finishBatchKeepingQueued).
-                if (sent > 0) {
-                    finishBatchSent(sent)
-                } else {
-                    finishBatchKeepingQueued(null)
-                }
+                finishBatchKeepingQueued(null)
                 return
             }
             val item = batch.items[nextIndex]
@@ -2189,12 +2185,6 @@ class SessionManager(private val context: Context) {
         if (message != null) _batchMessage.value = message
         if (survivors.isNotEmpty()) maybeStartOutgoingQueue()
         return survivors.size
-    }
-
-    /** All files confirmed. The panel goes away; the outcome stays as
-     * a message under it, and the confirmed transfers stay in history. */
-    private fun finishBatchSent(count: Int) {
-        finishBatchKeepingQueued("Batch sent · $count ${if (count == 1) "file" else "files"}")
     }
 
     /** Stopped by a file failure or a disconnect. The per-file error is

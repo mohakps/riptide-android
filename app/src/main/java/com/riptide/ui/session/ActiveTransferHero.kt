@@ -94,27 +94,15 @@ fun ActiveTransferHero(
                     )
                 }
                 activeTransfer == null -> {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            painter = painterResource(R.drawable.riptide_send),
-                            contentDescription = null,
-                            modifier = Modifier.size(24.dp),
-                            tint = RiptideColors.Primary
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            text = "READY WHEN YOU ARE",
-                            color = RiptideColors.OnSurfaceVariant,
-                            fontFamily = MonospaceFontFamily,
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp,
-                            letterSpacing = 1.3.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
+                    Icon(
+                        painter = painterResource(R.drawable.riptide_transfer),
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = RiptideColors.Primary
+                    )
                     Spacer(Modifier.height(16.dp))
                     Text(
-                        text = "Make the move.",
+                        text = "Ready to transfer",
                         color = RiptideColors.OnSurface,
                         fontSize = 24.sp,
                         lineHeight = 32.sp,

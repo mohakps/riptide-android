@@ -50,7 +50,7 @@ class OutgoingQueueTest : LoopbackTestBase() {
         assertTrue(waitForHistory("single.txt", TransferStatus.SUCCESS))
         assertTrue(waitFor(10_000) { peer.receivedFiles.containsKey("single.txt") })
         assertEquals(true, peer.receivedFiles["single.txt"]?.shaOk)
-        assertTrue(waitFor(5_000) { session.batchMessage.value == "Batch sent · 1 file" })
+        assertTrue(waitFor(5_000) { session.batch.value == null && session.batchMessage.value == null })
         assertNull(session.batch.value)
     }
 
@@ -71,7 +71,7 @@ class OutgoingQueueTest : LoopbackTestBase() {
         assertTrue(waitForHistory("second.txt", TransferStatus.SUCCESS))
         assertTrue(waitForHistory("third.txt", TransferStatus.SUCCESS))
         assertEquals(listOf("first.txt", "second.txt", "third.txt"), successfulSendOrder())
-        assertTrue(waitFor(5_000) { session.batchMessage.value == "Batch sent · 3 files" })
+        assertTrue(waitFor(5_000) { session.batch.value == null && session.batchMessage.value == null })
     }
 
     @Test
@@ -90,6 +90,25 @@ class OutgoingQueueTest : LoopbackTestBase() {
     }
 
     @Test
+    fun testShareIntakeDuringSingleSendSwitchesToBatch() {
+        assertTrue(connectAndApprove())
+        val first = makeFile("active-before-share.bin", 32 * 1024 * 1024)
+        val second = makeFile("shared-during-send.txt", 1024)
+        session.sendFile(TestFileProvider.uriFor(first))
+        assertTrue(waitFor(10_000) {
+            session.active.value?.let { it.filename == first.name && it.transferredBytes > 0 } == true
+        })
+        assertEquals(false, session.batch.value?.isBatchUi)
+
+        session.spoolSharedFiles(listOf(TestFileProvider.uriFor(second)))
+
+        assertTrue(waitFor(10_000) { session.batch.value?.isBatchUi == true })
+        assertTrue(waitForHistory(first.name, TransferStatus.SUCCESS))
+        assertTrue(waitForHistory(second.name, TransferStatus.SUCCESS))
+        assertTrue(waitFor(5_000) { session.batch.value == null })
+    }
+
+    @Test
     fun testStageThenConnectAutoSendsOnce() {
         val first = makeFile("staged-a.txt", 1024)
         val second = makeFile("staged-b.txt", 2048)
@@ -104,7 +123,7 @@ class OutgoingQueueTest : LoopbackTestBase() {
         assertTrue(waitForHistory("staged-a.txt", TransferStatus.SUCCESS))
         assertTrue(waitForHistory("staged-b.txt", TransferStatus.SUCCESS))
         assertEquals(listOf("staged-a.txt", "staged-b.txt"), successfulSendOrder())
-        assertTrue(waitFor(5_000) { session.batchMessage.value == "Batch sent · 2 files" })
+        assertTrue(waitFor(5_000) { session.batch.value == null && session.batchMessage.value == null })
         assertEquals(1, session.history.value.count { it.filename == "staged-a.txt" })
         assertEquals(1, session.history.value.count { it.filename == "staged-b.txt" })
     }
@@ -157,7 +176,7 @@ class OutgoingQueueTest : LoopbackTestBase() {
         session.setQueueItemExcluded(idB, true)
         assertTrue(connectAndApprove())
         assertTrue(waitForHistory("keep.txt", TransferStatus.SUCCESS))
-        assertTrue(waitFor(5_000) { session.batchMessage.value == "Batch sent · 1 file" })
+        assertTrue(waitFor(5_000) { session.batch.value == null && session.batchMessage.value == null })
         assertFalse(peer.receivedFiles.containsKey("removed.txt"))
         assertEquals(0, session.history.value.count { it.filename == "removed.txt" })
     }
@@ -264,7 +283,7 @@ class OutgoingQueueTest : LoopbackTestBase() {
         session.sendBatch(listOf(TestFileProvider.uriFor(first), TestFileProvider.uriFor(second)))
         assertTrue(waitForHistory("drain-a.txt", TransferStatus.SUCCESS))
         assertTrue(waitForHistory("drain-b.txt", TransferStatus.SUCCESS))
-        assertTrue(waitFor(5_000) { session.batchMessage.value == "Batch sent · 2 files" })
+        assertTrue(waitFor(5_000) { session.batch.value == null && session.batchMessage.value == null })
         assertNull(session.batch.value)
         // A fresh single send after the batch ends is single UI again.
         val big = makeFile("drain-single.bin", 32 * 1024 * 1024)

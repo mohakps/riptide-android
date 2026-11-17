@@ -229,19 +229,20 @@ fun QueueDevicePanel(
                         Row(
                             Modifier.semantics(mergeDescendants = true) {
                                 contentDescription = "$count ${if (count == 1) "file" else "files"}"
-                            },
-                            verticalAlignment = Alignment.CenterVertically
+                            }
                         ) {
                             Text(
                                 "%02d".format(count), color = T.OnSurface,
                                 fontFamily = FontFamily.Monospace, fontSize = 40.sp,
-                                lineHeight = 44.sp
+                                lineHeight = 44.sp,
+                                modifier = Modifier.alignByBaseline()
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
                                 if (count == 1) "file" else "files", color = T.OnSurface,
                                 fontSize = 17.sp, lineHeight = 22.sp,
-                                fontWeight = FontWeight.Medium
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.alignByBaseline()
                             )
                         }
                         Spacer(Modifier.height(4.dp))
@@ -337,7 +338,7 @@ fun QueueDevicePanel(
                         code = code,
                         onCopyCode = onCopyCode,
                         onShowFingerprint = onShowFingerprint,
-                        forceHorizontal = true
+                        panelWidth = wide
                     )
                 }
                 // Collapsed tab: dark phone glyph above a dark

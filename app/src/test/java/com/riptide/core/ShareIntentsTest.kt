@@ -1,13 +1,17 @@
 package com.riptide.core
 
 import android.content.Intent
+import android.content.ComponentName
+import android.content.pm.ActivityInfo
 import android.net.Uri
+import com.riptide.MainActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
@@ -20,6 +24,15 @@ import org.robolectric.annotation.Config
 class ShareIntentsTest {
 
     private fun uri(path: String): Uri = Uri.parse(path)
+
+    @Test
+    fun mainActivitySharesUseOneTask() {
+        val app = RuntimeEnvironment.getApplication()
+        @Suppress("DEPRECATION")
+        val info = app.packageManager.getActivityInfo(ComponentName(app, MainActivity::class.java), 0)
+        assertEquals(ActivityInfo.LAUNCH_SINGLE_TASK, info.launchMode)
+        assertEquals(ActivityInfo.DOCUMENT_LAUNCH_NONE, info.documentLaunchMode)
+    }
 
     @Test
     fun testSingleSendReturnsOneUri() {
