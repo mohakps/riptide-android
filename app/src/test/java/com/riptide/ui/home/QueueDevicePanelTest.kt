@@ -163,13 +163,13 @@ class QueueDevicePanelTest {
         composeRule.onNodeWithContentDescription("Show device info").performClick()
         composeRule.mainClock.advanceTimeBy(60)
         assertEquals(1, lineCountOf("Nothing Phone (2)"))
-        assertEquals(1, lineCountOf("Connect to a device to send them."))
+        assertEquals(1, lineCountOf("Connect a device to send."))
         // Device info open (progress 1): the queue content is
         // collapsed to its tab. Pre-fix it was measured at that
         // width, so the helper wrapped; post-fix it stays one line.
         composeRule.mainClock.advanceTimeBy(500)
         composeRule.waitForIdle()
-        assertEquals(1, lineCountOf("Connect to a device to send them."))
+        assertEquals(1, lineCountOf("Connect a device to send."))
     }
 
     @Test

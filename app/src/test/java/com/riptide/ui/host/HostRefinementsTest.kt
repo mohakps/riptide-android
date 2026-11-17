@@ -264,7 +264,7 @@ class HostRefinementsTest {
     @Test
     fun testHeaderSizes() {
         assertEquals(36.dp, RADIO_ICON_SIZE)
-        assertEquals(28.sp, CODE_VALUE_FONT_SIZE)
+        assertEquals(24.sp, CODE_VALUE_FONT_SIZE)
         assertEquals(32.sp, CODE_VALUE_LINE_HEIGHT)
     }
 

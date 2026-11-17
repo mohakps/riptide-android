@@ -1,6 +1,5 @@
 package com.riptide.ui.devices
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -25,7 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.ui.components.BottomInfoPanel
-import com.riptide.ui.components.PeerRow
+import com.riptide.ui.components.SavedPeerList
 import com.riptide.ui.components.RiptideTopBar
 import com.riptide.ui.model.SavedPeer
 import com.riptide.ui.theme.MonospaceFontFamily
@@ -104,11 +103,7 @@ fun DevicesScreen(
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.padding(bottom = 12.dp)
                     )
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        peers.forEach { peer ->
-                            PeerRow(peer = peer, onConnect = onJoinPeer, onForget = viewModel::onForgetPeer)
-                        }
-                    }
+                    SavedPeerList(peers, onConnect = onJoinPeer, onForget = viewModel::onForgetPeer)
                 }
                 // The tip is the last item of the scrolling body, not a
                 // fixed footer: 24 dp above, 24 dp trailing padding

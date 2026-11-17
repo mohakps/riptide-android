@@ -247,7 +247,7 @@ fun QueueDevicePanel(
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Connect to a device to send them.", color = T.OnSurfaceVariant,
+                            "Connect a device to send.", color = T.OnSurfaceVariant,
                             fontSize = 14.sp, lineHeight = 18.sp
                         )
                         Spacer(Modifier.weight(1f))

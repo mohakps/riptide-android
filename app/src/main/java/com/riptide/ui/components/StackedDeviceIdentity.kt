@@ -5,11 +5,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -25,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.R
 import com.riptide.ui.theme.ApprovedRiptideTokens as T
+
+private val TileVerticalPadding = 20.dp
 
 /**
  * Stateless approved identity composition. No socket, persistence or clipboard side effects.
@@ -138,15 +142,16 @@ private fun ApprovedCodeTile(code: String, onCopy: () -> Unit, modifier: Modifie
         color = T.CodeContainer, contentColor = T.OnCodeContainer,
         tonalElevation = 0.dp, shadowElevation = 0.dp,
     ) {
-        Column(Modifier.heightIn(min = 96.dp).padding(horizontal = padding, vertical = 16.dp)) {
+        Column(Modifier.padding(horizontal = padding, vertical = TileVerticalPadding)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("MY CODE", Modifier.weight(1f), color = T.OnCodeContainer, fontFamily = FontFamily.Monospace,
                     fontSize = (12 * scale).sp, letterSpacing = (1.3f * scale).sp, fontWeight = FontWeight.Medium, maxLines = 1)
                 Spacer(Modifier.width(8.dp))
                 Icon(painterResource(R.drawable.riptide_copy), null, Modifier.size(20.dp), tint = T.OnCodeContainer)
             }
-            Text(code, Modifier.paddingFromBaseline(top = 28.dp), color = T.OnCodeContainer,
-                fontFamily = FontFamily.Monospace, fontSize = (24 * scale).sp, maxLines = 1, softWrap = false)
+            IdentityTileValue(code, LocalTextStyle.current.copy(
+                fontFamily = FontFamily.Monospace, fontSize = (24 * scale).sp
+            ), T.OnCodeContainer)
         }
     }
 }
@@ -163,10 +168,18 @@ private fun ApprovedFingerprintTile(onShow: () -> Unit, modifier: Modifier, scal
         color = T.Surface, contentColor = T.OnSurface,
         tonalElevation = 0.dp, shadowElevation = 0.dp,
     ) {
-        Column(Modifier.heightIn(min = 96.dp).padding(horizontal = padding, vertical = 16.dp)) {
+        Column(Modifier.padding(horizontal = padding, vertical = TileVerticalPadding)) {
             Icon(painterResource(R.drawable.riptide_shield), null, Modifier.size(24.dp), tint = T.OnSurfaceVariant)
-            Text("Fingerprint", Modifier.paddingFromBaseline(top = 28.dp), color = T.OnSurface,
-                fontSize = (16 * scale).sp, maxLines = 1, softWrap = false)
+            IdentityTileValue("Fingerprint", LocalTextStyle.current.copy(fontSize = (16 * scale).sp), T.OnSurface)
         }
     }
+}
+
+@Composable
+private fun IdentityTileValue(value: String, style: TextStyle, color: Color) {
+    // Resolve the baseline before intrinsic measurement so that the tile reserves
+    // only the gap needed to reach it. Both values use the existing baseline.
+    val baseline = rememberTextMeasurer().measure(value, style, maxLines = 1, softWrap = false).firstBaseline
+    val spacing = with(LocalDensity.current) { (28.dp - baseline.toDp()).coerceAtLeast(0.dp) }
+    Text(value, Modifier.padding(top = spacing), color = color, style = style, maxLines = 1, softWrap = false)
 }

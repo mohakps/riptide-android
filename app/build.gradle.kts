@@ -20,8 +20,8 @@ android {
         applicationId = "com.riptide"
         minSdk = 29
         targetSdk = 34
-        versionCode = 30
-        versionName = "0.10.0"
+        versionCode = 32
+        versionName = "0.10.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

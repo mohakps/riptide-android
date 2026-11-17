@@ -1,6 +1,7 @@
 package com.riptide.ui.navigation
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
@@ -10,11 +11,18 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.riptide.ui.home.QueueDevicePanel
+import com.riptide.ui.model.BatchItem
+import com.riptide.ui.model.BatchState
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,7 +35,41 @@ class RiptideTabSurfacesTest {
     @get:Rule val compose = createComposeRule()
 
     @Test
-    fun shortDragSettlesAndQueuedFilesDisableTabSwipesButAllowSelection() {
+    fun panelSwipeStaysInsidePanelAndOutsideSwipeSwitchesTab() {
+        val tab = mutableStateOf(RiptideTab.Transfer)
+        val queue = BatchState(items = listOf(
+            BatchItem(id = "queued", uri = "content://example/file", name = "file.txt", providerSize = 100L)
+        ))
+        compose.setContent {
+            RiptideTabSurfaces(tab.value, { tab.value = it }, swipeEnabled = true) { destination ->
+                if (destination == RiptideTab.Transfer) {
+                    Column(Modifier.fillMaxSize()) {
+                        QueueDevicePanel(
+                            queue, "This phone", "123-456", {}, {}, {},
+                            Modifier.testTag("queue-panel")
+                        )
+                        Box(Modifier.weight(1f).fillMaxSize().testTag("outside-panel"))
+                    }
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(destination.label) }
+                }
+            }
+        }
+        compose.onNodeWithTag("queue-panel").performTouchInput {
+            swipeLeft(startX = width * .75f, endX = width * .25f)
+        }
+        compose.onNodeWithContentDescription("Show file queue").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(RiptideTab.Transfer, tab.value) }
+
+        compose.onNodeWithTag("outside-panel").performTouchInput {
+            swipeLeft(startX = width * .75f, endX = width * .25f)
+        }
+        compose.onNodeWithText("Devices").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(RiptideTab.Devices, tab.value) }
+    }
+
+    @Test
+    fun shortDragSettlesAndOpenSheetDisablesTabSwipesButAllowsSelection() {
         val tab = mutableStateOf(RiptideTab.Transfer)
         val swipeEnabled = mutableStateOf(true)
         compose.setContent {

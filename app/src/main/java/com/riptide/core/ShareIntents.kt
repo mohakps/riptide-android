@@ -21,6 +21,18 @@ data class SharedFiles(val uris: List<Uri>, val textOnly: Boolean)
  * copy that is actually sent, and [size] is its exact byte count. */
 data class SharedFile(val uri: Uri, val name: String, val size: Long, val spool: File)
 
+private const val SHARE_CONSUMED = "com.riptide.extra.SHARE_CONSUMED"
+
+/** Consume one Android delivery. Recreating the activity must not replay it.
+ * A new Intent sharing the same URI remains a separate, intentional delivery. */
+internal fun consumeSharedFiles(intent: Intent): SharedFiles? {
+    if (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE) return null
+    if (intent.getBooleanExtra(SHARE_CONSUMED, false)) return null
+    val files = extractSharedFiles(intent)
+    intent.putExtra(SHARE_CONSUMED, true)
+    return files
+}
+
 @Suppress("DEPRECATION")
 fun extractSharedFiles(intent: Intent): SharedFiles {
     val uris: List<Uri> = when (intent.action) {

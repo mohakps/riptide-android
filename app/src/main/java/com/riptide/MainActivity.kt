@@ -39,7 +39,6 @@ import com.riptide.core.DiagLog
 import com.riptide.core.HostManager
 import com.riptide.core.SessionManager
 import com.riptide.core.SharedFiles
-import com.riptide.core.extractSharedFiles
 import com.riptide.core.parseJoinLink
 import com.riptide.ui.approval.PeerApprovalSheet
 import com.riptide.ui.components.PhoneFingerprintSheet
@@ -64,6 +63,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -133,16 +133,17 @@ class MainActivity : ComponentActivity() {
     /** A deep link that arrived while the activity was already running. */
     private val deepLinkFlow = MutableStateFlow<String?>(null)
 
-    /** Files delivered by Android Share while the activity was already
-     * running. The launch intent is read the same way in onCreate. */
-    private val shareFlow = MutableStateFlow<SharedFiles?>(null)
+    /** UI notifications for shares already handed to the application session. */
+    private val shareRequests = Channel<SharedFiles>(Channel.UNLIMITED)
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         intent.data?.toString()?.let { deepLinkFlow.value = it }
         if (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE) {
-            shareFlow.value = extractSharedFiles(intent)
+            (application as RiptideApp).session.receiveShareIntent(intent)?.let {
+                shareRequests.trySend(it)
+            }
         }
     }
 
@@ -180,6 +181,13 @@ class MainActivity : ComponentActivity() {
         DiagLog.log("activity", "onCreate")
         val app = application as RiptideApp
         val session = app.session
+        // A recreated activity still carries its launch Intent. The application
+        // session already owns its spool work, so rotation must not enqueue it again.
+        if (savedInstanceState == null) {
+            intent?.let { launchIntent ->
+                session.receiveShareIntent(launchIntent)?.let { shareRequests.trySend(it) }
+            }
+        }
         setContent {
             RiptideTheme {
                 var currentTab by remember { mutableStateOf(RiptideTab.Transfer) }
@@ -238,34 +246,22 @@ class MainActivity : ComponentActivity() {
                 }
                 LaunchedEffect(Unit) {
                     intent?.data?.toString()?.let { deepLinkFlow.value = it }
-                    intent?.let {
-                        if (it.action == Intent.ACTION_SEND || it.action == Intent.ACTION_SEND_MULTIPLE) {
-                            shareFlow.value = extractSharedFiles(it)
-                        }
-                    }
                 }
-                // Android Share intake: files shared from another app
-                // are spooled and staged on Home, or sent at once when
-                // already connected. A failed session with a last host
-                // gets one rejoin attempt first; the staged files send
-                // when it connects, or stay staged if it fails. A share
-                // that arrives while hosting leaves the waiting screen
+                // Share files already belong to SessionManager's scope. This
+                // consumer only selects the destination and shows text-only
+                // feedback. onResume handles reconnecting a failed session.
+                // A share that arrives while hosting leaves the waiting screen
                 // alone: the files stage and send when the client joins.
                 // Text-only shares get the short note instead of failing
                 // silently. Process death mid-stage loses the queue;
                 // the user re-shares.
-                val shared by shareFlow.collectAsState()
-                LaunchedEffect(shared) {
-                    shared?.let { files ->
-                        shareFlow.value = null
+                LaunchedEffect(Unit) {
+                    for (files in shareRequests) {
                         if (!createServerOpen) {
                             currentTab = RiptideTab.Transfer
                             settingsOpen = false
                         }
-                        if (files.uris.isNotEmpty()) {
-                            session.onReturnedToForeground()
-                            session.spoolSharedFiles(files.uris)
-                        } else if (files.textOnly) {
+                        if (files.textOnly) {
                             scope.launch {
                                 snackbarHostState.showSnackbar("Riptide sends files — share a file to send it.")
                             }
@@ -366,8 +362,7 @@ class MainActivity : ComponentActivity() {
                         RiptideTabSurfaces(
                             selected = currentTab,
                             onSelect = { currentTab = it },
-                            swipeEnabled = (homeUiState.outgoingQueue?.includedCount ?: 0) == 0 &&
-                                !homeUiState.queueSheetOpen && !createServerOpen && !fingerprintOpen &&
+                            swipeEnabled = !homeUiState.queueSheetOpen && !createServerOpen && !fingerprintOpen &&
                                 hostApproval == null && approval == null,
                             modifier = contentModifier.fillMaxSize()
                         ) { tab ->

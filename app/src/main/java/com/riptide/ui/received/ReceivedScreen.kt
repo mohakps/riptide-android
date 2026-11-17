@@ -215,15 +215,6 @@ private fun ReceivedFileRow(record: ReceivedFileRecord, onOpen: () -> Unit, onRe
                     fontSize = 13.sp,
                     lineHeight = 20.sp
                 )
-                if (record.verified) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = "SHA-256 verified",
-                        color = RiptideColors.Success,
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp
-                    )
-                }
                 if (record.savedName != record.originalName) {
                     Spacer(Modifier.height(2.dp))
                     Text(

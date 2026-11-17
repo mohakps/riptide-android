@@ -55,7 +55,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.riptide.R
-import com.riptide.ui.components.PeerRow
+import com.riptide.ui.components.SavedPeerList
 import com.riptide.ui.components.RiptideTopBar
 import com.riptide.ui.components.StackedDeviceIdentity
 import com.riptide.ui.theme.ApprovedRiptideTokens
@@ -319,11 +319,7 @@ fun HomeScreen(
                         lineHeight = 20.sp
                     )
                 } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        uiState.savedPeers.take(2).forEach { peer ->
-                            PeerRow(peer = peer, onConnect = viewModel::joinPeer, onForget = viewModel::onForgetPeer)
-                        }
-                    }
+                    SavedPeerList(uiState.savedPeers.take(2), onConnect = viewModel::joinPeer, onForget = viewModel::onForgetPeer)
                 }
                 Spacer(modifier = Modifier.height(24.dp))
             }

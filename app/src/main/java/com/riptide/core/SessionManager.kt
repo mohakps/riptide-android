@@ -1106,8 +1106,8 @@ class SessionManager(private val context: Context) {
             // closed") is ignored instead of setting an error on
             // Home. See failSession.
             val generation = connectGeneration
-            val framed = FramedReader(session.socket.inputStream, session.socket)
             try {
+                val framed = FramedReader(session.socket.inputStream, session.socket)
                 while (true) {
                     // A framed message the receive path read ahead (its
                     // peek for a pending "cancel" after a payload) is
@@ -1644,11 +1644,18 @@ class SessionManager(private val context: Context) {
         maybeStartOutgoingQueue()
     }
 
-    /** Spool shared files to cacheDir at share time, then hand them
-     * to the queue. Runs on the session scope: the copy can take a
-     * moment for a large file, and the UI must not block. A file
-     * that cannot be opened is skipped and reported in
-     * [_transferError]; the rest still queue. */
+    /** Accept one Android share delivery, handing off its files before
+     * the activity can suspend or recreate. */
+    fun receiveShareIntent(intent: Intent): SharedFiles? {
+        val files = consumeSharedFiles(intent) ?: return null
+        // Hand off before any activity/Compose suspension. This scope belongs
+        // to the application session and survives activity recreation.
+        if (files.uris.isNotEmpty()) spoolSharedFiles(files.uris)
+        return files
+    }
+
+    /** Copy shared files on the session scope, then enqueue them.
+     * Unreadable files are skipped and reported in [_transferError]. */
     fun spoolSharedFiles(uris: List<Uri>) {
         scope.launch {
             val shared = uris.mapNotNull { uri -> spoolSharedFile(uri) }

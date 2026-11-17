@@ -89,9 +89,9 @@ internal val ROW_MIN_HEIGHT = 108.dp
  * against the two-line status, 10 dp gap. */
 internal val RADIO_ICON_SIZE = 36.dp
 
-/** Verification code value size (v0.9.7): 28 sp, monospace, one
+/** Verification code value size: 24 sp, monospace, one
  * line. The "MY CODE" label stays 11 sp and the Copy glyph 16 dp. */
-internal val CODE_VALUE_FONT_SIZE = 28.sp
+internal val CODE_VALUE_FONT_SIZE = 24.sp
 internal val CODE_VALUE_LINE_HEIGHT = 32.sp
 
 /** Monospace advance: every glyph, the hyphen included, is 0.6em
@@ -108,7 +108,7 @@ internal fun verificationCodeWidthDp(codeFontSizeSp: Float, fontScale: Float): F
 /** True when the code fits inside the tile at the given font size
  * and font scale: its width plus the tile's horizontal padding
  * (12 dp each side) must not exceed the tile width. At default
- * text 28 sp needs 117.6 + 24 = 141.6 dp of the 148 dp tile. */
+ * text 24 sp needs 100.8 + 24 = 124.8 dp of the 148 dp tile. */
 internal fun verificationCodeFitsTile(
     codeFontSizeSp: Float,
     fontScale: Float,
