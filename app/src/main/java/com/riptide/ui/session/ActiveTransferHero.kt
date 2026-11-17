@@ -320,7 +320,7 @@ fun ActiveTransferHero(
                             colors = ButtonDefaults.buttonColors(containerColor = RiptideColors.SurfaceRaised, contentColor = RiptideColors.Error),
                             modifier = Modifier.heightIn(min = 48.dp)
                         ) {
-                            Text(if (isCancelling) "Cancelling…" else "Cancel", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text(if (isCancelling) "Cancelling…" else "Cancel this transfer", fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
                     }
                 }

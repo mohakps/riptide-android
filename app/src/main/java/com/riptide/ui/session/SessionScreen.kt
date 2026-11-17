@@ -362,7 +362,7 @@ fun SessionScreen(
                     }
 
                     val batch = uiState.batchState
-                    if (batch != null) {
+                    if (batch != null && batch.isBatchUi) {
                         BatchTransferPanel(
                             batch = batch,
                             onCancelBatch = { showCancelBatchConfirm = true }

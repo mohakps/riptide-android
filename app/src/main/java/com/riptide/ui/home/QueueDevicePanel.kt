@@ -133,6 +133,12 @@ fun QueueDevicePanel(
                 anim.snapTo((dragStartProgress - dragTotal / totalPx).coerceIn(0f, 1f))
             }
         }
+        // height(IntrinsicSize.Min) matches the two panels' heights.
+        // Nothing under this Row may be a SubcomposeLayout
+        // (BoxWithConstraints, lazy list, TabRow): one under it
+        // crashed the first draw with files staged (v0.9.9).
+        // StackedDeviceIdentity's forceHorizontal path renders
+        // without BoxWithConstraints for exactly this reason.
         Row(
             Modifier
                 .fillMaxWidth()

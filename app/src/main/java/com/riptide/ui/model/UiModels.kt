@@ -140,13 +140,24 @@ data class BatchState(
      * "Estimating time…", or "Verifying on PC". */
     val batchEtaText: String = "Estimating time…",
     val running: Boolean = false,
-    val cancelling: Boolean = false
+    val cancelling: Boolean = false,
+    /** Latched once the queue ever held 2+ files that will send: a
+     * second file appended while one is sending (or staged)
+     * converts the Session UI to the batch UI, and it stays batch
+     * until the batch finishes. Reset only by a fresh batch. */
+    val becameBatch: Boolean = false
 ) {
     val activeItem: BatchItem? get() = items.getOrNull(activeIndex)
     /** Files that will still send: everything not removed in the
      * File queue sheet. The Home count and the runner both use this. */
     val includedItems: List<BatchItem> get() = items.filter { !it.excluded }
     val includedCount: Int get() = includedItems.size
+    /** True when the Session screen shows the batch UI (N of M,
+     * overall %, "View details", "Cancel batch") instead of the
+     * single-file hero: the queue holds 2+ files, or it once did
+     * while running. A staged queue that drops back to one file
+     * (excluded in the File queue sheet) returns to single UI. */
+    val isBatchUi: Boolean get() = includedCount > 1 || becameBatch
     /** Total selected bytes, when every included file's size is known;
      * null otherwise, in which case the overall bar is indeterminate. */
     val totalBytes: Long? get() = if (includedItems.all { it.knownSize != null }) includedItems.sumOf { it.knownSize!! } else null

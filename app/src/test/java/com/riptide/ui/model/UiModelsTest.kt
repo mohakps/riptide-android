@@ -67,4 +67,46 @@ class UiModelsTest {
         assertEquals(true, batch.isVerifying)
         assertEquals(99, batch.overallPercent)
     }
+
+    @Test
+    fun testBatchStateSingleFileIsSingleUi() {
+        val batch = BatchState(items = listOf(
+            BatchItem(id = "1", uri = "content://com.example/1", name = "a.pdf", providerSize = 100L)
+        ))
+        assertEquals(false, batch.becameBatch)
+        assertEquals(false, batch.isBatchUi)
+    }
+
+    @Test
+    fun testBatchStateTwoFilesIsBatchUi() {
+        val uri = "content://com.example/1"
+        val batch = BatchState(items = listOf(
+            BatchItem(id = "1", uri = uri, name = "a.pdf", providerSize = 100L),
+            BatchItem(id = "2", uri = uri, name = "b.mp4", providerSize = 100L)
+        ))
+        assertEquals(false, batch.becameBatch)
+        assertEquals(true, batch.isBatchUi)
+    }
+
+    @Test
+    fun testBatchStateLatchedBatchStaysBatchUi() {
+        // One file left but the queue once held two while running:
+        // the Session UI stays batch until the batch finishes.
+        val batch = BatchState(
+            items = listOf(BatchItem(id = "1", uri = "content://com.example/1", name = "a.pdf", providerSize = 100L)),
+            becameBatch = true
+        )
+        assertEquals(true, batch.isBatchUi)
+    }
+
+    @Test
+    fun testBatchStateExcludedFileDoesNotCountTowardBatchUi() {
+        val uri = "content://com.example/1"
+        val batch = BatchState(items = listOf(
+            BatchItem(id = "1", uri = uri, name = "a.pdf", providerSize = 100L),
+            BatchItem(id = "2", uri = uri, name = "b.mp4", providerSize = 100L, excluded = true)
+        ))
+        assertEquals(1, batch.includedCount)
+        assertEquals(false, batch.isBatchUi)
+    }
 }

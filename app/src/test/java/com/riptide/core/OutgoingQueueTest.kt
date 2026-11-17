@@ -205,4 +205,97 @@ class OutgoingQueueTest : LoopbackTestBase() {
         assertTrue(waitFor(5_000) { session.batch.value == null })
         assertEquals(ConnectionState.IDLE, session.connection.value)
     }
+
+    @Test
+    fun testSingleSendIsSingleUi() {
+        assertTrue(connectAndApprove())
+        val big = makeFile("single-ui.bin", 32 * 1024 * 1024)
+        session.sendFile(TestFileProvider.uriFor(big))
+        assertTrue(waitFor(10_000) { session.batch.value?.running == true })
+        assertEquals(false, session.batch.value?.becameBatch)
+        assertEquals(false, session.batch.value?.isBatchUi)
+        assertTrue(waitForHistory("single-ui.bin", TransferStatus.SUCCESS))
+    }
+
+    @Test
+    fun testSecondFileAppendedMidSendConvertsToBatchUi() {
+        assertTrue(connectAndApprove())
+        val big = makeFile("convert-big.bin", 32 * 1024 * 1024)
+        val small = makeFile("convert-small.txt", 1024)
+        session.sendFile(TestFileProvider.uriFor(big))
+        assertTrue(waitFor(10_000) { session.batch.value?.running == true })
+        assertEquals(false, session.batch.value?.isBatchUi)
+        session.sendFile(TestFileProvider.uriFor(small))
+        assertTrue(waitFor(10_000) { session.batch.value?.items?.size == 2 })
+        assertEquals(true, session.batch.value?.becameBatch)
+        assertEquals(true, session.batch.value?.isBatchUi)
+        assertTrue(waitForHistory("convert-big.bin", TransferStatus.SUCCESS))
+        assertTrue(waitForHistory("convert-small.txt", TransferStatus.SUCCESS))
+    }
+
+    @Test
+    fun testMultiPickOfTwoIsBatchFromStart() {
+        val first = makeFile("multipick-a.txt", 1024)
+        val second = makeFile("multipick-b.txt", 1024)
+        session.sendBatch(listOf(TestFileProvider.uriFor(first), TestFileProvider.uriFor(second)))
+        assertTrue(waitFor(5_000) { session.batch.value?.includedCount == 2 })
+        assertEquals(true, session.batch.value?.becameBatch)
+        assertEquals(true, session.batch.value?.isBatchUi)
+    }
+
+    @Test
+    fun testSecondFileStagedMakesBatch() {
+        val first = makeFile("staged-one.txt", 1024)
+        session.sendFile(TestFileProvider.uriFor(first))
+        assertTrue(waitFor(5_000) { session.batch.value?.includedCount == 1 })
+        assertEquals(false, session.batch.value?.isBatchUi)
+        val second = makeFile("staged-two.txt", 1024)
+        session.sendFile(TestFileProvider.uriFor(second))
+        assertTrue(waitFor(5_000) { session.batch.value?.includedCount == 2 })
+        assertEquals(true, session.batch.value?.becameBatch)
+        assertEquals(true, session.batch.value?.isBatchUi)
+    }
+
+    @Test
+    fun testBatchDrainsThenNextSingleSendIsSingleUi() {
+        assertTrue(connectAndApprove())
+        val first = makeFile("drain-a.txt", 1024)
+        val second = makeFile("drain-b.txt", 1024)
+        session.sendBatch(listOf(TestFileProvider.uriFor(first), TestFileProvider.uriFor(second)))
+        assertTrue(waitForHistory("drain-a.txt", TransferStatus.SUCCESS))
+        assertTrue(waitForHistory("drain-b.txt", TransferStatus.SUCCESS))
+        assertTrue(waitFor(5_000) { session.batchMessage.value == "Batch sent · 2 files" })
+        assertNull(session.batch.value)
+        // A fresh single send after the batch ends is single UI again.
+        val big = makeFile("drain-single.bin", 32 * 1024 * 1024)
+        session.sendFile(TestFileProvider.uriFor(big))
+        assertTrue(waitFor(10_000) { session.batch.value?.running == true })
+        assertEquals(false, session.batch.value?.becameBatch)
+        assertEquals(false, session.batch.value?.isBatchUi)
+        assertTrue(waitForHistory("drain-single.bin", TransferStatus.SUCCESS))
+    }
+
+    @Test
+    fun testExcludeOneOfTwoStagedFilesReturnsToSingleUi() {
+        val first = makeFile("exclude-a.txt", 1024)
+        val second = makeFile("exclude-b.txt", 1024)
+        session.sendBatch(listOf(TestFileProvider.uriFor(first), TestFileProvider.uriFor(second)))
+        assertTrue(waitFor(5_000) { session.batch.value?.includedCount == 2 })
+        assertEquals(true, session.batch.value?.isBatchUi)
+        val idA = session.batch.value!!.items.first { it.name == "exclude-a.txt" }.id
+        session.setQueueItemExcluded(idA, true)
+        assertEquals(1, session.batch.value?.includedCount)
+        assertEquals(false, session.batch.value?.becameBatch)
+        assertEquals(false, session.batch.value?.isBatchUi)
+        // Un-excluding sets the latch again.
+        session.setQueueItemExcluded(idA, false)
+        assertEquals(2, session.batch.value?.includedCount)
+        assertEquals(true, session.batch.value?.isBatchUi)
+        // Excluding again and closing the sheet drops the file and
+        // leaves a single-file queue.
+        session.setQueueItemExcluded(idA, true)
+        session.purgeExcludedItems()
+        assertEquals(1, session.batch.value?.items?.size)
+        assertEquals(false, session.batch.value?.isBatchUi)
+    }
 }

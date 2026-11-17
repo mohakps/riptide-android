@@ -20,8 +20,8 @@ android {
         applicationId = "com.riptide"
         minSdk = 29
         targetSdk = 34
-        versionCode = 27
-        versionName = "0.9.9"
+        versionCode = 28
+        versionName = "0.9.10"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -51,6 +51,16 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+    testOptions {
+        unitTests {
+            // Without this AGP does not hand the merged manifest /
+            // resources to the test JVM, so Robolectric falls back to
+            // its default manifest (package org.robolectric.default)
+            // and ActivityScenario cannot resolve ComponentActivity
+            // from ui-test-manifest. Needed by QueueDevicePanelTest.
+            isIncludeAndroidResources = true
+        }
     }
     kotlinOptions {
         jvmTarget = "17"
@@ -113,6 +123,13 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("androidx.test:core:1.6.1")
+    // Compose UI tests (QueueDevicePanelTest): createComposeRule
+    // renders real composables under Robolectric, which is the only
+    // way to catch a layout-time crash like the v0.9.9 intrinsic
+    // measurement failure. ui-test-manifest supplies the
+    // ComponentActivity the rule launches.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.compose.ui:ui-test-manifest")
     // Robolectric: the loopback session tests (cancel engine, disconnect
     // regression) drive a real SessionManager, which needs a real
     // Context; plain unit tests only have the android stub jar.

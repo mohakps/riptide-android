@@ -1599,9 +1599,10 @@ class SessionManager(private val context: Context) {
         // or starts a fresh one.
         _batch.update { current ->
             if (current == null) {
-                BatchState(items = items)
+                BatchState(items = items, becameBatch = items.size > 1)
             } else {
-                current.copy(items = current.items + items)
+                val merged = current.items + items
+                current.copy(items = merged, becameBatch = current.becameBatch || merged.count { !it.excluded } > 1)
             }
         }
         _transferError.value = null
@@ -1631,9 +1632,10 @@ class SessionManager(private val context: Context) {
         // a run is finishing must not be lost with it.
         _batch.update { current ->
             if (current == null) {
-                BatchState(items = items)
+                BatchState(items = items, becameBatch = items.size > 1)
             } else {
-                current.copy(items = current.items + items)
+                val merged = current.items + items
+                current.copy(items = merged, becameBatch = current.becameBatch || merged.count { !it.excluded } > 1)
             }
         }
         _transferError.value = null
@@ -1709,7 +1711,15 @@ class SessionManager(private val context: Context) {
      * the sheet is not shown while a queue is running. */
     fun setQueueItemExcluded(id: String, excluded: Boolean) {
         _batch.update { batch ->
-            batch?.copy(items = batch.items.map { if (it.id == id) it.copy(excluded = excluded) else it })
+            batch?.let {
+                val updated = it.items.map { item -> if (item.id == id) item.copy(excluded = excluded) else item }
+                // Staged only in practice (the sheet is not shown
+                // while running): excluding a staged file back to one
+                // returns the queue to single UI; un-excluding sets
+                // it again. While running the latch sticks, so a batch
+                // where one file failed stays batch.
+                it.copy(items = updated, becameBatch = if (it.running) it.becameBatch else updated.count { item -> !item.excluded } > 1)
+            }
         }
     }
 
@@ -1732,7 +1742,15 @@ class SessionManager(private val context: Context) {
         val excluded = batch.items.filter { it.excluded }
         if (excluded.isEmpty()) return
         deleteUnsentSpools(excluded)
-        _batch.update { it?.copy(items = it.items.filter { item -> !item.excluded }) }
+        _batch.update {
+            it?.let { batch ->
+                val kept = batch.items.filter { item -> !item.excluded }
+                // As in setQueueItemExcluded: staged only in practice,
+                // so the latch follows the kept count; while running it
+                // would stick.
+                batch.copy(items = kept, becameBatch = if (batch.running) batch.becameBatch else kept.size > 1)
+            }
+        }
         if (_batch.value?.items?.isEmpty() == true) _batch.value = null
     }
 
@@ -2161,7 +2179,10 @@ class SessionManager(private val context: Context) {
             survivors = kept
             val keptIds = kept.map { it.id }.toSet()
             deleteUnsentSpools(batch.items.filter { it.id !in keptIds })
-            if (kept.isEmpty()) null else BatchState(items = kept)
+            // The kept files are a new batch, so the latch resets:
+            // a fresh single send after the old batch ends shows
+            // the single-file UI again.
+            if (kept.isEmpty()) null else BatchState(items = kept, becameBatch = kept.size > 1)
         }
         _active.value = null
         _busyPhase.value = null

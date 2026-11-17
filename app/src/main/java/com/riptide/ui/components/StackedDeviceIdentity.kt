@@ -61,20 +61,39 @@ fun StackedDeviceIdentity(
                 }
             }
         }
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            // Adapt only when needed for accessible text/narrow windows; reference uses a weighted Row.
-            if (!forceHorizontal && (fontScale > 1.2f || maxWidth < 300.dp)) {
-                Column(verticalArrangement = Arrangement.spacedBy(T.IdentityGap)) {
-                    ApprovedCodeTile(code, onCopyCode, Modifier.fillMaxWidth())
-                    ApprovedFingerprintTile(onShowFingerprint, Modifier.fillMaxWidth())
-                }
-            } else {
-                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(T.IdentityGap)) {
-                    ApprovedCodeTile(code, onCopyCode, Modifier.weight(.625f).fillMaxHeight())
-                    ApprovedFingerprintTile(onShowFingerprint, Modifier.weight(.375f).fillMaxHeight())
+        if (forceHorizontal) {
+            // No BoxWithConstraints here: the Home queue panel sizes
+            // this composition with height(IntrinsicSize.Min), and a
+            // SubcomposeLayout (which BoxWithConstraints is) cannot
+            // answer intrinsic measurements — that combination crashed
+            // the app on the first draw with files staged (v0.9.9).
+            // The width read is only needed by the adaptive branch
+            // below, which the panel never takes.
+            CodeFingerprintRow(code, onCopyCode, onShowFingerprint, Modifier.fillMaxWidth())
+        } else {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                // Adapt only when needed for accessible text/narrow windows; reference uses a weighted Row.
+                if (fontScale > 1.2f || maxWidth < 300.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(T.IdentityGap)) {
+                        ApprovedCodeTile(code, onCopyCode, Modifier.fillMaxWidth())
+                        ApprovedFingerprintTile(onShowFingerprint, Modifier.fillMaxWidth())
+                    }
+                } else {
+                    CodeFingerprintRow(code, onCopyCode, onShowFingerprint, Modifier.fillMaxWidth())
                 }
             }
         }
+    }
+}
+
+/** Code and fingerprint tiles side by side, equal height. The
+ * IntrinsicSize.Min is safe here: both tiles are plain Surfaces
+ * over Columns, with no SubcomposeLayout underneath. */
+@Composable
+private fun CodeFingerprintRow(code: String, onCopyCode: () -> Unit, onShowFingerprint: () -> Unit, modifier: Modifier) {
+    Row(modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(T.IdentityGap)) {
+        ApprovedCodeTile(code, onCopyCode, Modifier.weight(.625f).fillMaxHeight())
+        ApprovedFingerprintTile(onShowFingerprint, Modifier.weight(.375f).fillMaxHeight())
     }
 }
 
